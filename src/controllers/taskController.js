@@ -1,13 +1,11 @@
 import Task from "../models/Task.js";
+import { io } from "../../server.js"; // ✅ import socket instance
 
 const clean = (v) => (Array.isArray(v) ? v[0] : v)?.trim();
 
-// ✅ Detects correct folder based on mimetype
 function getMediaPath(file) {
   if (!file) return null;
-  if (file.mimetype.startsWith("video/")) {
-    return `/uploads/videos/${file.filename}`;
-  }
+  if (file.mimetype.startsWith("video/")) return `/uploads/videos/${file.filename}`;
   return `/uploads/images/${file.filename}`;
 }
 
@@ -31,9 +29,23 @@ export const createTask = async (req, res) => {
     description: clean(req.body.description),
     assignee: clean(req.body.assignee),
     taskStatus: clean(req.body.taskStatus),
-    media: getMediaPath(req.file), // ✅ /uploads/images/x.jpg OR /uploads/videos/x.mp4
+    media: getMediaPath(req.file),
   });
-  res.status(201).json(task);
+
+  const populated = await task.populate("assignee taskStatus");
+
+  // ✅ Emit to ALL connected clients
+  io.emit("task:created", populated);
+
+  // ✅ Notify assigned user specifically
+  if (populated.assignee?._id) {
+    io.emit("notification", {
+      userId: populated.assignee._id.toString(),
+      message: `📋 You have been assigned: "${populated.name}"`,
+    });
+  }
+
+  res.status(201).json(populated);
 };
 
 /* ================= UPDATE ================= */
@@ -45,17 +57,23 @@ export const updateTask = async (req, res) => {
   task.description = clean(req.body.description) || task.description;
   task.assignee = clean(req.body.assignee) || task.assignee;
   task.taskStatus = clean(req.body.taskStatus) || task.taskStatus;
-
-  if (req.file) {
-    task.media = getMediaPath(req.file); // ✅ correct path for image or video
-  }
+  if (req.file) task.media = getMediaPath(req.file);
 
   await task.save();
-  res.json(task);
+  const populated = await task.populate("assignee taskStatus");
+
+  // ✅ Emit update to all clients
+  io.emit("task:updated", populated);
+
+  res.json(populated);
 };
 
 /* ================= DELETE ================= */
 export const deleteTask = async (req, res) => {
   await Task.findByIdAndDelete(req.params.id);
+
+  // ✅ Emit delete — frontend removes it from list instantly
+  io.emit("task:deleted", { _id: req.params.id });
+
   res.json({ message: "Task deleted" });
 };

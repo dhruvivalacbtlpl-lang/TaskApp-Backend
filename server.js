@@ -5,6 +5,8 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createServer } from "http";
+import { Server } from "socket.io";
 
 /* ROUTES */
 import staffRoutes from "./src/routes/staffRoutes.js";
@@ -19,41 +21,43 @@ import createAdmin from "./src/scripts/createAdmin.js";
 import { createRolesIfNotExist } from "./src/utils/createRoles.js";
 
 dotenv.config();
+
 const app = express();
+const httpServer = createServer(app); // ✅ wrap express in http server
+
+/* ================= SOCKET.IO SETUP ================= */
+const io = new Server(httpServer, {
+  cors: {
+    origin: "http://localhost:5173",
+    credentials: true,
+  },
+});
+
+io.on("connection", (socket) => {
+  console.log("⚡ Client connected:", socket.id);
+  socket.on("disconnect", () => {
+    console.log("❌ Client disconnected:", socket.id);
+  });
+});
+
+// ✅ Export io so controllers can emit events
+export { io };
 
 /* ES MODULE PATH FIX */
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /* ================= MIDDLEWARE ================= */
-
-app.use(
-  cors({
-    origin: "http://localhost:5173",
-    credentials: true,
-  })
-);
-
+app.use(cors({ origin: "http://localhost:5173", credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 /* ================= STATIC UPLOADS ================= */
-
-// Images
-app.use(
-  "/uploads/images",
-  express.static(path.join(__dirname, "uploads/images"))
-);
-
-// Videos
-app.use(
-  "/uploads/videos",
-  express.static(path.join(__dirname, "uploads/videos"))
-);
+app.use("/uploads/images", express.static(path.join(__dirname, "uploads/images")));
+app.use("/uploads/videos", express.static(path.join(__dirname, "uploads/videos")));
 
 /* ================= API ROUTES ================= */
-
 app.use("/api/auth", authRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/role", roleRoutes);
@@ -62,20 +66,17 @@ app.use("/api/tasks", taskRoutes);
 app.use("/api/task-status", taskStatusRoutes);
 
 /* ================= DATABASE ================= */
-
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Error:", err));
 
 /* ================= INIT ================= */
-
 createAdmin();
 createRolesIfNotExist();
 
 /* ================= START ================= */
-
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
