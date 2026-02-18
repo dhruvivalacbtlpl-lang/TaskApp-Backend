@@ -1,135 +1,61 @@
 import Task from "../models/Task.js";
-import Staff from "../models/Staff.js";
-import { sendTaskMail } from "../services/mail.js";
 
-/* ================= GET ALL TASKS ================= */
+const clean = (v) => (Array.isArray(v) ? v[0] : v)?.trim();
+
+// ✅ Detects correct folder based on mimetype
+function getMediaPath(file) {
+  if (!file) return null;
+  if (file.mimetype.startsWith("video/")) {
+    return `/uploads/videos/${file.filename}`;
+  }
+  return `/uploads/images/${file.filename}`;
+}
+
+/* ================= GET ALL ================= */
 export const getTasks = async (req, res) => {
-  try {
-    const tasks = await Task.find()
-      .populate("assignee")
-      .populate("taskStatus");
-
-    res.json(tasks);
-  } catch (error) {
-    console.error("Get Tasks Error:", error);
-    res.status(500).json({ message: "Error fetching tasks" });
-  }
+  const tasks = await Task.find().populate("assignee taskStatus");
+  res.json(tasks);
 };
 
-/* ================= GET SINGLE TASK ================= */
+/* ================= GET ONE ================= */
 export const getTask = async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id)
-      .populate("assignee")
-      .populate("taskStatus");
-
-    if (!task) {
-      return res.status(404).json({ message: "Task not found" });
-    }
-
-    res.json(task);
-  } catch (error) {
-    console.error("Get Task Error:", error);
-    res.status(500).json({ message: "Error fetching task" });
-  }
+  const task = await Task.findById(req.params.id).populate("assignee taskStatus");
+  if (!task) return res.status(404).json({ message: "Task not found" });
+  res.json(task);
 };
 
-/* ================= CREATE TASK ================= */
+/* ================= CREATE ================= */
 export const createTask = async (req, res) => {
-  try {
-    const { name, description, assignee, taskStatus } = req.body;
-
-    const newTask = await Task.create({
-      name,
-      description,
-      assignee,
-      taskStatus,
-    });
-
-    const populatedTask = await Task.findById(newTask._id)
-      .populate("assignee")
-      .populate("taskStatus");
-
-    const loggedUser = await Staff.findById(req.user?.id);
-
-    if (populatedTask.assignee?.email) {
-      await sendTaskMail({
-        email: populatedTask.assignee.email,
-        taskName: populatedTask.name,
-        description: populatedTask.description,
-        status: populatedTask.taskStatus?.name,
-        assignedBy: loggedUser?.name || "Admin",
-      });
-    }
-
-    res.status(201).json(newTask);
-  } catch (error) {
-    console.error("Create Task Error:", error);
-    res.status(500).json({ message: "Error creating task" });
-  }
+  const task = await Task.create({
+    name: clean(req.body.name),
+    description: clean(req.body.description),
+    assignee: clean(req.body.assignee),
+    taskStatus: clean(req.body.taskStatus),
+    media: getMediaPath(req.file), // ✅ /uploads/images/x.jpg OR /uploads/videos/x.mp4
+  });
+  res.status(201).json(task);
 };
 
-/* ================= UPDATE TASK ================= */
+/* ================= UPDATE ================= */
 export const updateTask = async (req, res) => {
-  try {
-    const { name, description, assignee, taskStatus } = req.body;
+  const task = await Task.findById(req.params.id);
+  if (!task) return res.status(404).json({ message: "Task not found" });
 
-    const existingTask = await Task.findById(req.params.id)
-      .populate("assignee");
+  task.name = clean(req.body.name) || task.name;
+  task.description = clean(req.body.description) || task.description;
+  task.assignee = clean(req.body.assignee) || task.assignee;
+  task.taskStatus = clean(req.body.taskStatus) || task.taskStatus;
 
-    if (!existingTask) {
-      return res.status(404).json({ message: "Task not found" });
-    }
-
-    const oldAssignee = existingTask.assignee?._id?.toString();
-
-    existingTask.name = name;
-    existingTask.description = description;
-    existingTask.assignee = assignee;
-    existingTask.taskStatus = taskStatus;
-
-    await existingTask.save();
-
-    const updatedTask = await Task.findById(req.params.id)
-      .populate("assignee")
-      .populate("taskStatus");
-
-    const loggedUser = await Staff.findById(req.user?.id);
-
-    /* 🔹 SEND MAIL ONLY IF ASSIGNEE CHANGED */
-    if (
-      assignee &&
-      assignee !== oldAssignee &&
-      updatedTask.assignee?.email
-    ) {
-      await sendTaskMail({
-        email: updatedTask.assignee.email,
-        taskName: updatedTask.name,
-        description: updatedTask.description,
-        status: updatedTask.taskStatus?.name,
-        assignedBy: loggedUser?.name || "Admin",
-      });
-    }
-
-    res.json(updatedTask);
-  } catch (error) {
-    console.error("Update Task Error:", error);
-    res.status(500).json({ message: "Error updating task" });
+  if (req.file) {
+    task.media = getMediaPath(req.file); // ✅ correct path for image or video
   }
+
+  await task.save();
+  res.json(task);
 };
 
-/* ================= DELETE TASK ================= */
+/* ================= DELETE ================= */
 export const deleteTask = async (req, res) => {
-  try {
-    const task = await Task.findByIdAndDelete(req.params.id);
-
-    if (!task) {
-      return res.status(404).json({ message: "Task not found" });
-    }
-
-    res.json({ message: "Task deleted successfully" });
-  } catch (error) {
-    console.error("Delete Task Error:", error);
-    res.status(500).json({ message: "Error deleting task" });
-  }
+  await Task.findByIdAndDelete(req.params.id);
+  res.json({ message: "Task deleted" });
 };

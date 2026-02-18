@@ -1,29 +1,21 @@
 import mongoose from "mongoose";
 
-const taskSchema = new mongoose.Schema({
-    name: {
-        type: String,
-        required: true,
-    },
-    description: {
-        type: String,
-        required: true,
-    },
+const taskSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true },
+    description: { type: String, required: true },
     taskStatus: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "TaskStatus",
-    },
-    status: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Permission",
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "TaskStatus",
     },
     assignee: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Staff", // changed User -> Staff
-        required: true,
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Staff",
+      required: true,
     },
-}, { timestamps: true });
+    media: { type: String }, // store filename only
+  },
+  { timestamps: true }
+);
 
-// export default so import Task works in ES Modules
-const Task = mongoose.model("Task", taskSchema);
-export default Task;
+export default mongoose.model("Task", taskSchema);
