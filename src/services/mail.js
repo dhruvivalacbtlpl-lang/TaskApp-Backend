@@ -11,34 +11,22 @@ const createTransporter = () => {
   });
 };
 
-/* ================= STAFF ACCOUNT MAIL ================= */
-export const sendStaffMail = async (email, password) => {
+// ✅ Fixed - accepts any message string
+export const sendStaffMail = async (email, message) => {
   const transporter = createTransporter();
 
   const mailOptions = {
     from: process.env.EMAIL_USER,
     to: email,
     subject: "Staff Account Created",
-    html: `
-      <h3>Your Staff Account</h3>
-      <p><b>Email:</b> ${email}</p>
-      <p><b>Password:</b> ${password}</p>
-      <p>Please login and change your password immediately.</p>
-    `,
+    text: message, // ✅ use text instead of html
   };
 
   const info = await transporter.sendMail(mailOptions);
   console.log("✅ Staff email sent:", info.response);
 };
 
-/* ================= TASK ASSIGNMENT MAIL ================= */
-export const sendTaskMail = async ({
-  email,
-  taskName,
-  description,
-  status,
-  assignedBy,
-}) => {
+export const sendTaskMail = async ({ email, taskName, description, status, assignedBy }) => {
   const transporter = createTransporter();
 
   const mailOptions = {

@@ -1,6 +1,7 @@
 import Staff from "../models/Staff.js";
 import Role from "../models/Role.js";
 import bcryptjs from "bcryptjs";
+import { sendStaffMail } from "../utils/mailer.js";
 
 // Get all staff
 export const getAllStaff = async (req, res) => {
@@ -32,7 +33,6 @@ export const createStaff = async (req, res) => {
       return res.status(400).json({ message: "Role not found" });
     }
 
-    // ✅ Hash password
     const hashedPassword = await bcryptjs.hash(password, 10);
 
     const newStaff = await Staff.create({
@@ -42,6 +42,9 @@ export const createStaff = async (req, res) => {
       password: hashedPassword,
       role: role._id,
     });
+
+    // ✅ Send email with plain password
+    await sendStaffMail(email, password);
 
     res.status(201).json(newStaff);
 
