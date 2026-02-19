@@ -13,8 +13,8 @@ const router = express.Router();
 
 router.get("/", getTasks);
 router.get("/:id", getTask);
-router.post("/", upload.single("media"), createTask);
-router.put("/:id", upload.single("media"), updateTask);
+router.post("/", upload.array("media"), createTask);
+router.put("/:id", upload.array("media"), updateTask);
 router.delete("/:id", deleteTask);
 
 export default router;

@@ -13,7 +13,7 @@ const taskSchema = new mongoose.Schema(
       ref: "Staff",
       required: true,
     },
-    media: { type: String }, // store filename only
+    media: [String], // ✅ array of paths
   },
   { timestamps: true }
 );
