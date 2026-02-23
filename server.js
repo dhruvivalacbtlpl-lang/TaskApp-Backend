@@ -15,6 +15,7 @@ import roleRoutes from "./src/routes/roleRoutes.js";
 import permissionRoutes from "./src/routes/permissions.js";
 import taskRoutes from "./src/routes/taskRoutes.js";
 import taskStatusRoutes from "./src/routes/taskStatusRoutes.js";
+import projectRoutes from "./src/routes/projectRoutes.js";
 
 /* SCRIPTS */
 import createAdmin from "./src/scripts/createAdmin.js";
@@ -70,7 +71,7 @@ app.use("/api/role", roleRoutes);
 app.use("/api/permissions", permissionRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/task-status", taskStatusRoutes);
-
+app.use("/api/projects", projectRoutes);
 /* ================= DATABASE ================= */
 mongoose
   .connect(process.env.MONGO_URI)

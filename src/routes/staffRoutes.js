@@ -1,5 +1,6 @@
 import express from "express";
 import Staff from "../models/Staff.js";
+import Role from "../models/Role.js";
 import bcrypt from "bcryptjs";
 import { sendStaffMail } from "../services/mail.js";
 
@@ -39,6 +40,26 @@ router.post("/create", async (req, res) => {
   try {
     const { name, email, mobile, role } = req.body;
 
+    // ✅ Check if selected role is Admin
+    const selectedRole = await Role.findById(role);
+    if (selectedRole?.name?.toLowerCase() === "admin") {
+      // ✅ Check if requester is admin via cookie token
+      const jwt = await import("jsonwebtoken");
+      const token = req.cookies?.token;
+      if (!token) {
+        return res.status(403).json({ error: "Only admins can create admin accounts" });
+      }
+      try {
+        const decoded = jwt.default.verify(token, process.env.JWT_SECRET);
+        const requester = await Staff.findById(decoded.id).populate("role");
+        if (requester?.role?.name?.toLowerCase() !== "admin") {
+          return res.status(403).json({ error: "Only admins can create admin accounts" });
+        }
+      } catch {
+        return res.status(403).json({ error: "Only admins can create admin accounts" });
+      }
+    }
+
     const exists = await Staff.findOne({ email });
     if (exists)
       return res.status(400).json({ error: "Email already exists" });
@@ -54,14 +75,12 @@ router.post("/create", async (req, res) => {
       password: hashedPassword,
     });
 
-    // SEND EMAIL WITH LOGIN CREDENTIALS
     await sendStaffMail(
       email,
       `Hello ${name},\n\nYour account has been created.\nEmail: ${email}\nPassword: ${plainPassword}\n\nPlease log in and change your password.`
     );
 
     const populatedStaff = await Staff.findById(staff._id).populate("role");
-
     res.status(201).json(populatedStaff);
   } catch (err) {
     console.error(err);
@@ -74,6 +93,27 @@ router.post("/create", async (req, res) => {
 ========================= */
 router.put("/:id", async (req, res) => {
   try {
+    // ✅ If trying to assign admin role, verify requester is admin
+    if (req.body.role) {
+      const selectedRole = await Role.findById(req.body.role);
+      if (selectedRole?.name?.toLowerCase() === "admin") {
+        const jwt = await import("jsonwebtoken");
+        const token = req.cookies?.token;
+        if (!token) {
+          return res.status(403).json({ error: "Only admins can assign admin role" });
+        }
+        try {
+          const decoded = jwt.default.verify(token, process.env.JWT_SECRET);
+          const requester = await Staff.findById(decoded.id).populate("role");
+          if (requester?.role?.name?.toLowerCase() !== "admin") {
+            return res.status(403).json({ error: "Only admins can assign admin role" });
+          }
+        } catch {
+          return res.status(403).json({ error: "Only admins can assign admin role" });
+        }
+      }
+    }
+
     const updatedStaff = await Staff.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -83,7 +123,6 @@ router.put("/:id", async (req, res) => {
     if (!updatedStaff)
       return res.status(404).json({ error: "Staff not found" });
 
-    // SEND EMAIL NOTIFYING PROFILE UPDATE
     await sendStaffMail(
       updatedStaff.email,
       `Hello ${updatedStaff.name},\n\nYour profile has been updated by the admin.\n\nIf you did not expect this, please contact support.`
@@ -101,6 +140,25 @@ router.put("/:id", async (req, res) => {
 ========================= */
 router.delete("/:id", async (req, res) => {
   try {
+    // ✅ Prevent deleting admin accounts if not admin
+    const staffToDelete = await Staff.findById(req.params.id).populate("role");
+    if (staffToDelete?.role?.name?.toLowerCase() === "admin") {
+      const jwt = await import("jsonwebtoken");
+      const token = req.cookies?.token;
+      if (!token) {
+        return res.status(403).json({ error: "Only admins can delete admin accounts" });
+      }
+      try {
+        const decoded = jwt.default.verify(token, process.env.JWT_SECRET);
+        const requester = await Staff.findById(decoded.id).populate("role");
+        if (requester?.role?.name?.toLowerCase() !== "admin") {
+          return res.status(403).json({ error: "Only admins can delete admin accounts" });
+        }
+      } catch {
+        return res.status(403).json({ error: "Only admins can delete admin accounts" });
+      }
+    }
+
     const deletedStaff = await Staff.findByIdAndDelete(req.params.id);
     if (!deletedStaff)
       return res.status(404).json({ error: "Staff not found" });

@@ -13,7 +13,12 @@ const taskSchema = new mongoose.Schema(
       ref: "Staff",
       required: true,
     },
-    media: [String], // ✅ array of paths
+    project: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Project",
+      default: null, // ✅ optional — tasks can exist without a project
+    },
+    media: [String],
   },
   { timestamps: true }
 );

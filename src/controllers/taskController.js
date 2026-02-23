@@ -12,7 +12,7 @@ function getMediaPath(file) {
 /* ================= GET ALL ================= */
 export const getTasks = async (req, res) => {
   try {
-    const tasks = await Task.find().populate("assignee taskStatus");
+    const tasks = await Task.find().populate("assignee taskStatus project"); // ✅ added project
     res.json(tasks);
   } catch (err) {
     res.status(500).json({ message: "Error fetching tasks" });
@@ -22,7 +22,7 @@ export const getTasks = async (req, res) => {
 /* ================= GET ONE ================= */
 export const getTask = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id).populate("assignee taskStatus");
+    const task = await Task.findById(req.params.id).populate("assignee taskStatus project"); // ✅ added project
     if (!task) return res.status(404).json({ message: "Task not found" });
     res.json(task);
   } catch (err) {
@@ -33,7 +33,6 @@ export const getTask = async (req, res) => {
 /* ================= CREATE ================= */
 export const createTask = async (req, res) => {
   try {
-    // ✅ map each file individually
     const mediaPaths = req.files && req.files.length > 0
       ? req.files.map(getMediaPath)
       : [];
@@ -43,10 +42,11 @@ export const createTask = async (req, res) => {
       description: clean(req.body.description),
       assignee: clean(req.body.assignee),
       taskStatus: clean(req.body.taskStatus),
+      project: clean(req.body.project) || null,        // ✅ added project
       media: mediaPaths,
     });
 
-    const populated = await task.populate("assignee taskStatus");
+    const populated = await task.populate("assignee taskStatus project"); // ✅ added project
 
     io.emit("task:created", populated);
 
@@ -74,14 +74,14 @@ export const updateTask = async (req, res) => {
     task.description = clean(req.body.description) || task.description;
     task.assignee = clean(req.body.assignee) || task.assignee;
     task.taskStatus = clean(req.body.taskStatus) || task.taskStatus;
+    task.project = clean(req.body.project) || null;    // ✅ added project
 
-    // ✅ map each file individually
     if (req.files && req.files.length > 0) {
       task.media = req.files.map(getMediaPath);
     }
 
     await task.save();
-    const populated = await task.populate("assignee taskStatus");
+    const populated = await task.populate("assignee taskStatus project"); // ✅ added project
 
     io.emit("task:updated", populated);
 
