@@ -1,20 +1,21 @@
+// routes/taskRoutes.js
 import express from "express";
 import {
-  getTasks,
-  getTask,
-  createTask,
-  updateTask,
-  deleteTask,
+  getTasks, getTaskById, createTask, updateTask, deleteTask,
+  getIssues, createIssue,
 } from "../controllers/taskController.js";
-
-import { upload } from "../middleware/upload.js";
 
 const router = express.Router();
 
-router.get("/", getTasks);
-router.get("/:id", getTask);
-router.post("/", upload.array("media"), createTask);
-router.put("/:id", upload.array("media"), updateTask);
-router.delete("/:id", deleteTask);
+// ISSUES — must be BEFORE /:id
+router.get("/issues/all", getIssues);
+router.post("/issues/create", createIssue);
 
-export default router;
+// TASKS
+router.get("/", getTasks);
+router.post("/", createTask);
+router.put("/:id", updateTask);
+router.delete("/:id", deleteTask);
+router.get("/:id", getTaskById);
+
+export default router; 

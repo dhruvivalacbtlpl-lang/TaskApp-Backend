@@ -1,7 +1,13 @@
+// models/Task.js
 import mongoose from "mongoose";
 
 const taskSchema = new mongoose.Schema(
   {
+    type: {
+      type: String,
+      enum: ["task", "issue"],
+      default: "task",
+    },
     name: { type: String, required: true },
     description: { type: String, required: true },
     taskStatus: {
@@ -16,9 +22,30 @@ const taskSchema = new mongoose.Schema(
     project: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Project",
-      default: null, // ✅ optional — tasks can exist without a project
+      default: null,
     },
     media: [String],
+
+    // Issue-only fields (null for tasks)
+    priority: {
+      type: String,
+      enum: ["low", "medium", "high", "critical"],
+      default: null,
+    },
+    issueType: {
+      type: String,
+      enum: ["bug", "feature", "improvement"],
+      default: null,
+    },
+    severity: {
+      type: String,
+      enum: ["minor", "moderate", "major", "critical"],
+      default: null,
+    },
+    dueDate: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

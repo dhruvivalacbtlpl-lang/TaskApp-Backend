@@ -1,104 +1,102 @@
+// controllers/taskController.js
 import Task from "../models/Task.js";
 import { io } from "../../server.js";
 
-const clean = (v) => (Array.isArray(v) ? v[0] : v)?.trim();
+const populate = [
+  { path: "taskStatus" },
+  { path: "assignee", select: "name email" },
+  { path: "project", select: "name" },
+];
 
-function getMediaPath(file) {
-  if (!file) return null;
-  if (file.mimetype.startsWith("video/")) return `/uploads/videos/${file.filename}`;
-  return `/uploads/images/${file.filename}`;
-}
+// ─── TASKS ───────────────────────────────────────────
 
-/* ================= GET ALL ================= */
 export const getTasks = async (req, res) => {
   try {
-    const tasks = await Task.find().populate("assignee taskStatus project"); // ✅ added project
+    const tasks = await Task.find({ 
+      $or: [{ type: "task" }, { type: { $exists: false } }, { type: null }]
+    })
+      .populate(populate)
+      .sort({ createdAt: -1 });
     res.json(tasks);
   } catch (err) {
-    res.status(500).json({ message: "Error fetching tasks" });
+    res.status(500).json({ error: "Failed to fetch tasks" });
   }
 };
-
-/* ================= GET ONE ================= */
-export const getTask = async (req, res) => {
+export const getTaskById = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id).populate("assignee taskStatus project"); // ✅ added project
-    if (!task) return res.status(404).json({ message: "Task not found" });
+    const task = await Task.findById(req.params.id).populate(populate);
+    if (!task) return res.status(404).json({ error: "Not found" });
     res.json(task);
   } catch (err) {
-    res.status(500).json({ message: "Error fetching task" });
+    res.status(500).json({ error: "Failed to fetch task" });
   }
 };
 
-/* ================= CREATE ================= */
 export const createTask = async (req, res) => {
   try {
-    const mediaPaths = req.files && req.files.length > 0
-      ? req.files.map(getMediaPath)
-      : [];
-
+    const { name, description, taskStatus, assignee, project, media } = req.body;
     const task = await Task.create({
-      name: clean(req.body.name),
-      description: clean(req.body.description),
-      assignee: clean(req.body.assignee),
-      taskStatus: clean(req.body.taskStatus),
-      project: clean(req.body.project) || null,        // ✅ added project
-      media: mediaPaths,
+      type: "task",
+      name, description, taskStatus, assignee, project, media,
     });
-
-    const populated = await task.populate("assignee taskStatus project"); // ✅ added project
-
+    const populated = await Task.findById(task._id).populate(populate);
     io.emit("task:created", populated);
-
-    if (populated.assignee?._id) {
-      io.emit("notification", {
-        userId: populated.assignee._id.toString(),
-        message: `📋 You have been assigned: "${populated.name}"`,
-      });
-    }
-
     res.status(201).json(populated);
   } catch (err) {
-    console.error("Create Task Error:", err);
-    res.status(500).json({ message: "Error creating task" });
+    res.status(500).json({ error: "Failed to create task" });
   }
 };
 
-/* ================= UPDATE ================= */
 export const updateTask = async (req, res) => {
   try {
-    const task = await Task.findById(req.params.id);
-    if (!task) return res.status(404).json({ message: "Task not found" });
-
-    task.name = clean(req.body.name) || task.name;
-    task.description = clean(req.body.description) || task.description;
-    task.assignee = clean(req.body.assignee) || task.assignee;
-    task.taskStatus = clean(req.body.taskStatus) || task.taskStatus;
-    task.project = clean(req.body.project) || null;    // ✅ added project
-
-    if (req.files && req.files.length > 0) {
-      task.media = req.files.map(getMediaPath);
-    }
-
-    await task.save();
-    const populated = await task.populate("assignee taskStatus project"); // ✅ added project
-
-    io.emit("task:updated", populated);
-
-    res.json(populated);
+    const task = await Task.findByIdAndUpdate(
+      req.params.id, req.body, { new: true }
+    ).populate(populate);
+    io.emit("task:updated", task);
+    res.json(task);
   } catch (err) {
-    console.error("Update Task Error:", err);
-    res.status(500).json({ message: "Error updating task" });
+    res.status(500).json({ error: "Failed to update task" });
   }
 };
 
-/* ================= DELETE ================= */
 export const deleteTask = async (req, res) => {
   try {
     await Task.findByIdAndDelete(req.params.id);
     io.emit("task:deleted", { _id: req.params.id });
-    res.json({ message: "Task deleted" });
+    res.json({ message: "Deleted" });
   } catch (err) {
-    res.status(500).json({ message: "Error deleting task" });
+    res.status(500).json({ error: "Failed to delete task" });
+  }
+};
+
+// ─── ISSUES ──────────────────────────────────────────
+
+export const getIssues = async (req, res) => {
+  try {
+    const issues = await Task.find({ type: "issue" })
+      .populate(populate)
+      .sort({ createdAt: -1 });
+    res.json(issues);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch issues" });
+  }
+};
+
+export const createIssue = async (req, res) => {
+  try {
+    const {
+      name, description, taskStatus, assignee,
+      project, media, priority, issueType, severity, dueDate,
+    } = req.body;
+    const issue = await Task.create({
+      type: "issue",
+      name, description, taskStatus, assignee,
+      project, media, priority, issueType, severity, dueDate,
+    });
+    const populated = await Task.findById(issue._id).populate(populate);
+    io.emit("issue:created", populated);
+    res.status(201).json(populated);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create issue" });
   }
 };
