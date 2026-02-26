@@ -16,6 +16,7 @@ import permissionRoutes from "./src/routes/permissions.js";
 import taskRoutes from "./src/routes/taskRoutes.js";
 import taskStatusRoutes from "./src/routes/taskStatusRoutes.js";
 import projectRoutes from "./src/routes/projectRoutes.js";
+import documentRoutes from "./src/routes/documentRoutes.js";
 
 /* SCRIPTS */
 import createAdmin from "./src/scripts/createAdmin.js";
@@ -72,6 +73,8 @@ app.use("/api/permissions", permissionRoutes);
 app.use("/api/tasks", taskRoutes);
 app.use("/api/task-status", taskStatusRoutes);
 app.use("/api/projects", projectRoutes);
+app.use("/api/documents", documentRoutes);
+
 /* ================= DATABASE ================= */
 mongoose
   .connect(process.env.MONGO_URI)
@@ -83,7 +86,7 @@ createAdmin();
 createRolesIfNotExist();
 
 /* ================= START ================= */
-  const PORT = process.env.PORT || 5000;
-  httpServer.listen(PORT, () => {
+const PORT = process.env.PORT || 5000;
+httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
