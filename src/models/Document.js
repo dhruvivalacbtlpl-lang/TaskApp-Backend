@@ -1,4 +1,3 @@
-// models/Document.js
 import mongoose from "mongoose";
 
 const accessRequestSchema = new mongoose.Schema({
@@ -13,23 +12,21 @@ const documentSchema = new mongoose.Schema(
     title:       { type: String, required: true, trim: true },
     description: { type: String, required: true, trim: true },
     status: {
-      type:    String,
-      enum:    ["draft", "active", "review", "archived"],
+      type: String,
+      enum: ["draft", "active", "review", "archived"],
       default: "draft",
     },
-    project:  { type: mongoose.Schema.Types.ObjectId, ref: "Project", required: true }, // ← NOW REQUIRED
-    assignee: { type: mongoose.Schema.Types.ObjectId, ref: "Staff",   default: null },
-    createdBy:{ type: mongoose.Schema.Types.ObjectId, ref: "Staff",   default: null },
-
-    // ── FILE ATTACHMENT ──────────────────────────────────────────────────────
+    project:   { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null },
+    assignee:  { type: mongoose.Schema.Types.ObjectId, ref: "Staff",   default: null },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "Staff",   default: null },
     file: {
-      originalName: { type: String, default: null },
-      storedName:   { type: String, default: null },
-      mimetype:     { type: String, default: null },
-      size:         { type: Number, default: null },
-      url:          { type: String, default: null },
+      url:          { type: String },
+      originalName: { type: String },
+      mimetype:     { type: String },
+      size:         { type: Number },
     },
-
+    // ✅ users granted access via access request approval
+    allowedUsers:   [{ type: mongoose.Schema.Types.ObjectId, ref: "Staff" }],
     accessRequests: [accessRequestSchema],
   },
   { timestamps: true }

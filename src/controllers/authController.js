@@ -2,11 +2,11 @@ import bcryptjs from "bcryptjs";
 import Staff from "../models/Staff.js";
 import jwt from "jsonwebtoken";
 
-/* ================= LOGIN ================= */
 export const login = async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ message: "Email and password required" });
+    if (!email || !password)
+      return res.status(400).json({ message: "Email and password required" });
 
     const user = await Staff.findOne({ email }).populate("role");
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -14,13 +14,17 @@ export const login = async (req, res) => {
     const isMatch = await bcryptjs.compare(password, user.password);
     if (!isMatch) return res.status(401).json({ message: "Invalid password" });
 
-    const token = jwt.sign({ id: user._id, role: user.role.name }, process.env.JWT_SECRET, { expiresIn: "1d" });
+    const token = jwt.sign(
+      { id: user._id, role: user.role.name },
+      process.env.JWT_SECRET,
+      { expiresIn: "1d" }
+    );
 
     res.cookie("token", token, {
       httpOnly: true,
-      secure: true,        // 🔥 HTTPS / devtunnel
-      sameSite: "None",    // 🔥 Cross-origin
-      maxAge: 24*60*60*1000,
+      secure: true,
+      sameSite: "None",
+      maxAge: 24 * 60 * 60 * 1000,
     });
 
     res.status(200).json({ message: "Login successful", data: user });
@@ -30,7 +34,6 @@ export const login = async (req, res) => {
   }
 };
 
-/* ================= LOGOUT ================= */
 export const logout = async (req, res) => {
   try {
     res.clearCookie("token", { httpOnly: true, secure: true, sameSite: "None" });
@@ -40,7 +43,6 @@ export const logout = async (req, res) => {
   }
 };
 
-/* ================= GET PROFILE ================= */
 export const getProfile = async (req, res) => {
   try {
     const user = await Staff.findById(req.user.id).populate("role");

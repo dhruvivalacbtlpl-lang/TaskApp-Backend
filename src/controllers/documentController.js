@@ -1,8 +1,6 @@
-// controllers/documentController.js
-import path from "path";
-import fs from "fs";
 import Document from "../models/Document.js";
-import Staff from "../models/Staff.js";
+import Staff    from "../models/Staff.js";
+import jwt      from "jsonwebtoken";
 import {
   sendDocumentMail,
   sendAccessRequestMail,
@@ -15,18 +13,30 @@ const getIO = async () => {
 };
 
 const populate = [
-  { path: "project",  select: "name" },
-  { path: "assignee", select: "name email" },
-  { path: "createdBy", select: "name email" },
+  { path: "project",             select: "name" },
+  { path: "assignee",            select: "name email" },
+  { path: "createdBy",           select: "name email" },
+  { path: "allowedUsers",        select: "name email" },   // ✅ NEW
   { path: "accessRequests.user", select: "name email role" },
 ];
 
-// ─── GET ALL DOCUMENTS ────────────────────────────────────────────────────────
+// ── Helper: extract user from cookie token ────────────────────────────────────
+const getUserFromToken = async (req) => {
+  try {
+    const token = req.cookies?.token;
+    if (!token) return null;
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const staff   = await Staff.findById(decoded.id).populate("role");
+    return staff || null;
+  } catch {
+    return null;
+  }
+};
+
+// ─── GET ALL ──────────────────────────────────────────────────────────────────
 export const getDocuments = async (req, res) => {
   try {
-    const docs = await Document.find()
-      .populate(populate)
-      .sort({ createdAt: -1 });
+    const docs = await Document.find().populate(populate).sort({ createdAt: -1 });
     res.json(docs);
   } catch (err) {
     console.error("❌ getDocuments:", err.message);
@@ -34,7 +44,7 @@ export const getDocuments = async (req, res) => {
   }
 };
 
-// ─── GET SINGLE DOCUMENT ──────────────────────────────────────────────────────
+// ─── GET ONE ──────────────────────────────────────────────────────────────────
 export const getDocumentById = async (req, res) => {
   try {
     const doc = await Document.findById(req.params.id).populate(populate);
@@ -46,7 +56,7 @@ export const getDocumentById = async (req, res) => {
   }
 };
 
-// ─── GET PENDING ACCESS REQUESTS (admin only) ─────────────────────────────────
+// ─── GET PENDING ACCESS REQUESTS ─────────────────────────────────────────────
 export const getAccessRequests = async (req, res) => {
   try {
     const docs = await Document.find({ "accessRequests.status": "pending" })
@@ -75,34 +85,31 @@ export const getAccessRequests = async (req, res) => {
   }
 };
 
-// ─── CREATE DOCUMENT ──────────────────────────────────────────────────────────
+// ─── CREATE ───────────────────────────────────────────────────────────────────
 export const createDocument = async (req, res) => {
   try {
+    const currentUser = await getUserFromToken(req);
     const { title, description, status, project, assignee } = req.body;
 
-    if (!title || !description || !assignee || !project) {
-      // Clean up uploaded file if validation fails
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: "title, description, assignee, and project are required" });
+    if (!title || !description) {
+      return res.status(400).json({ error: "title and description are required" });
     }
 
-    // Build file info if a file was uploaded
-    const fileData = req.file ? {
+    const file = req.file ? {
+      url:          `/uploads/documents/${req.file.filename}`,
       originalName: req.file.originalname,
-      storedName:   req.file.filename,
       mimetype:     req.file.mimetype,
       size:         req.file.size,
-      url:          `/uploads/documents/${req.file.filename}`,
-    } : null;
+    } : undefined;
 
     const doc = await Document.create({
       title,
       description,
-      status:    status || "draft",
-      project,
-      assignee,
-      createdBy: req.user?._id || null,
-      ...(fileData && { file: fileData }),
+      status:    status   || "draft",
+      project:   project  || null,
+      assignee:  assignee || null,
+      createdBy: currentUser?._id || null,
+      ...(file && { file }),
     });
 
     const populated = await Document.findById(doc._id).populate(populate);
@@ -111,7 +118,7 @@ export const createDocument = async (req, res) => {
       const io = await getIO();
       io.emit("document:created", populated);
     } catch (ioErr) {
-      console.error("⚠️ Socket emit failed:", ioErr.message);
+      console.error("⚠️ Socket emit failed (non-fatal):", ioErr.message);
     }
 
     try {
@@ -123,54 +130,40 @@ export const createDocument = async (req, res) => {
           description:   populated.description || "—",
           status:        populated.status,
           project:       populated.project?.name || null,
-          assignedBy:    req.user?.name || "Admin",
+          assignedBy:    currentUser?.name || "Admin",
         });
       }
     } catch (mailErr) {
-      console.error("⚠️ Document mail failed:", mailErr.message);
+      console.error("⚠️ Document mail failed (non-fatal):", mailErr.message);
     }
 
     res.status(201).json(populated);
   } catch (err) {
-    if (req.file) fs.unlinkSync(req.file.path);
-    console.error("❌ createDocument:", err.message);
+    console.error("❌ createDocument:", err.name, "-", err.message);
     res.status(500).json({ error: "Failed to create document", details: err.message });
   }
 };
 
-// ─── UPDATE DOCUMENT ──────────────────────────────────────────────────────────
+// ─── UPDATE ───────────────────────────────────────────────────────────────────
 export const updateDocument = async (req, res) => {
   try {
-    const existing = await Document.findById(req.params.id);
-    if (!existing) {
-      if (req.file) fs.unlinkSync(req.file.path);
-      return res.status(404).json({ error: "Document not found" });
-    }
+    const currentUser = await getUserFromToken(req);
+    const updateData  = { ...req.body };
 
-    const updateData = { ...req.body };
+    if (updateData.project  === "") updateData.project  = null;
     if (updateData.assignee === "") updateData.assignee = null;
 
-    // Handle file update
     if (req.file) {
-      // Delete old file if exists
-      if (existing.file?.storedName) {
-        const oldPath = path.join("uploads/documents", existing.file.storedName);
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-      }
       updateData.file = {
+        url:          `/uploads/documents/${req.file.filename}`,
         originalName: req.file.originalname,
-        storedName:   req.file.filename,
         mimetype:     req.file.mimetype,
         size:         req.file.size,
-        url:          `/uploads/documents/${req.file.filename}`,
       };
     }
 
-    // Handle file removal if frontend sends removeFile=true
-    if (req.body.removeFile === "true" && existing.file?.storedName) {
-      const oldPath = path.join("uploads/documents", existing.file.storedName);
-      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-      updateData.file = { originalName: null, storedName: null, mimetype: null, size: null, url: null };
+    if (req.body.removeFile === "true") {
+      updateData.file = null;
     }
 
     const doc = await Document.findByIdAndUpdate(
@@ -179,11 +172,13 @@ export const updateDocument = async (req, res) => {
       { new: true, runValidators: false }
     ).populate(populate);
 
+    if (!doc) return res.status(404).json({ error: "Document not found" });
+
     try {
       const io = await getIO();
       io.emit("document:updated", doc);
     } catch (ioErr) {
-      console.error("⚠️ Socket emit failed:", ioErr.message);
+      console.error("⚠️ Socket emit failed (non-fatal):", ioErr.message);
     }
 
     try {
@@ -195,36 +190,30 @@ export const updateDocument = async (req, res) => {
           description:   doc.description || "—",
           status:        doc.status,
           project:       doc.project?.name || null,
-          assignedBy:    req.user?.name || "Admin",
+          assignedBy:    currentUser?.name || "Admin",
         });
       }
     } catch (mailErr) {
-      console.error("⚠️ Document update mail failed:", mailErr.message);
+      console.error("⚠️ Document update mail failed (non-fatal):", mailErr.message);
     }
 
     res.json(doc);
   } catch (err) {
-    if (req.file) fs.unlinkSync(req.file.path);
     console.error("❌ updateDocument:", err.message);
     res.status(500).json({ error: "Failed to update document", details: err.message });
   }
 };
 
-// ─── DELETE DOCUMENT ──────────────────────────────────────────────────────────
+// ─── DELETE ───────────────────────────────────────────────────────────────────
 export const deleteDocument = async (req, res) => {
   try {
-    const doc = await Document.findById(req.params.id);
-    if (doc?.file?.storedName) {
-      const filePath = path.join("uploads/documents", doc.file.storedName);
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    }
     await Document.findByIdAndDelete(req.params.id);
 
     try {
       const io = await getIO();
       io.emit("document:deleted", { _id: req.params.id });
     } catch (ioErr) {
-      console.error("⚠️ Socket emit failed:", ioErr.message);
+      console.error("⚠️ Socket emit failed (non-fatal):", ioErr.message);
     }
 
     res.json({ message: "Deleted" });
@@ -234,75 +223,50 @@ export const deleteDocument = async (req, res) => {
   }
 };
 
-// ─── REQUEST ACCESS TO A SPECIFIC DOCUMENT ───────────────────────────────────
+// ─── REQUEST ACCESS ───────────────────────────────────────────────────────────
 export const requestAccess = async (req, res) => {
   try {
+    const currentUser = await getUserFromToken(req);
+    if (!currentUser) return res.status(401).json({ error: "Not authenticated" });
+
     const { message } = req.body;
     const doc = await Document.findById(req.params.id).populate("project", "name");
     if (!doc) return res.status(404).json({ error: "Document not found" });
 
     const already = doc.accessRequests.find(
-      (r) => r.user.toString() === req.user._id.toString() && r.status === "pending"
+      (r) => r.user.toString() === currentUser._id.toString() && r.status === "pending"
     );
     if (already) {
       return res.status(400).json({ error: "You already have a pending access request for this document" });
     }
 
-    doc.accessRequests.push({ user: req.user._id, message: message || "", status: "pending" });
+    doc.accessRequests.push({ user: currentUser._id, message: message || "", status: "pending" });
     await doc.save();
 
     try {
       const admins = await Staff.find({}).populate("role", "name");
-      const adminList = admins.filter(s => s.role?.name?.toLowerCase() === "admin" && s.email);
+      const adminList = admins.filter(
+        (s) => s.role?.name?.toLowerCase() === "admin" && s.email
+      );
       for (const admin of adminList) {
         await sendAccessRequestMail({
           adminEmail:     admin.email,
           adminName:      admin.name,
-          requesterName:  req.user.name,
-          requesterEmail: req.user.email,
+          requesterName:  currentUser.name,
+          requesterEmail: currentUser.email,
           documentTitle:  doc.title,
           project:        doc.project?.name || null,
           message:        message || "",
         });
       }
     } catch (mailErr) {
-      console.error("⚠️ Access request mail failed:", mailErr.message);
+      console.error("⚠️ Access request mail failed (non-fatal):", mailErr.message);
     }
 
     res.json({ message: "Access request submitted" });
   } catch (err) {
     console.error("❌ requestAccess:", err.message);
     res.status(500).json({ error: "Failed to submit access request" });
-  }
-};
-
-// ─── REQUEST ACCESS TO THE DOCUMENTS MODULE ───────────────────────────────────
-export const requestModuleAccess = async (req, res) => {
-  try {
-    const { message } = req.body;
-    const admins = await Staff.find({}).populate("role", "name");
-    const adminList = admins.filter(s => s.role?.name?.toLowerCase() === "admin" && s.email);
-
-    if (adminList.length === 0) {
-      return res.status(404).json({ error: "No admin found to notify" });
-    }
-
-    for (const admin of adminList) {
-      await sendAccessRequestMail({
-        adminEmail:     admin.email,
-        adminName:      admin.name,
-        requesterName:  req.user.name,
-        requesterEmail: req.user.email,
-        documentTitle:  "Documents Module",
-        project:        null,
-        message:        message || `${req.user.name} is requesting access to the Documents module.`,
-      });
-    }
-
-    res.json({ message: "Module access request sent to admin" });
-  } catch (err) {
-    console.error("❌ requestModuleAccess:", err.message);
-    res.status(500).json({ error: "Failed to send module access request" });
   }
 };
 
@@ -324,7 +288,33 @@ export const respondToAccessRequest = async (req, res) => {
     if (!request) return res.status(404).json({ error: "Request not found" });
 
     request.status = status;
+
+    // ✅ If approved — add user to allowedUsers so they can see the doc
+    if (status === "approved") {
+      const userId = request.user?._id || request.user;
+      const alreadyAllowed = doc.allowedUsers.some(
+        (u) => u.toString() === userId.toString()
+      );
+      if (!alreadyAllowed) {
+        doc.allowedUsers.push(userId);
+      }
+    }
+
     await doc.save();
+
+    // ✅ Emit socket so frontend updates in real time without refresh
+    try {
+      const updatedDoc = await Document.findById(doc._id).populate([
+        { path: "project",      select: "name" },
+        { path: "assignee",     select: "name email" },
+        { path: "createdBy",    select: "name email" },
+        { path: "allowedUsers", select: "name email" },
+      ]);
+      const io = await getIO();
+      io.emit("document:updated", updatedDoc);
+    } catch (ioErr) {
+      console.error("⚠️ Socket emit failed (non-fatal):", ioErr.message);
+    }
 
     try {
       if (request.user?.email) {
@@ -337,7 +327,7 @@ export const respondToAccessRequest = async (req, res) => {
         });
       }
     } catch (mailErr) {
-      console.error("⚠️ Access response mail failed:", mailErr.message);
+      console.error("⚠️ Access response mail failed (non-fatal):", mailErr.message);
     }
 
     res.json({ message: `Access request ${status}` });
@@ -345,4 +335,4 @@ export const respondToAccessRequest = async (req, res) => {
     console.error("❌ respondToAccessRequest:", err.message);
     res.status(500).json({ error: "Failed to update access request" });
   }
-};
+};  
