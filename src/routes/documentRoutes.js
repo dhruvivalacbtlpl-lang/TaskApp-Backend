@@ -11,6 +11,7 @@ import {
   deleteDocument,
   requestAccess,
   respondToAccessRequest,
+  verifyDocumentToken,        // ✅ NEW
 } from "../controllers/documentController.js";
 
 // ── Multer storage for documents ──────────────────────────────────────────────
@@ -37,6 +38,9 @@ const upload = multer({
 });
 
 const router = express.Router();
+
+// ── Token verify (no /:id so must be before /:id routes) ─────────────────────
+router.get("/verify-token", verifyDocumentToken);           // ✅ NEW
 
 // ── Access Requests (before /:id to avoid collision) ─────────────────────────
 router.get("/access-requests",            getAccessRequests);

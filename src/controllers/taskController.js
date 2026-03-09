@@ -2,7 +2,6 @@
 import Task from "../models/Task.js";
 import { sendTaskMail, sendIssueMail } from "../services/mail.js";
 
-// ✅ Lazy-load io to avoid circular import crash
 const getIO = async () => {
   const mod = await import("../../server.js");
   return mod.io;
@@ -59,9 +58,9 @@ export const createTask = async (req, res) => {
       taskStatus: taskStatus || null,
       assignee,
       project: project || null,
-      media: getMediaPaths(req.files), // ✅ from multer via taskRoutes upload.array("media")
-      // ✅ Don't set priority/issueType/severity for tasks — leave as schema default (null)
-      // But we must NOT pass null explicitly since enum validation rejects it
+      media: getMediaPaths(req.files),
+      // ✅ Do NOT pass priority/issueType/severity for tasks — they are issue-only fields
+      // If somehow sent, ignore them (don't spread req.body)
     });
 
     const populated = await Task.findById(task._id).populate(populate);
@@ -102,7 +101,7 @@ export const updateTask = async (req, res) => {
     if (updateData.assignee === "") updateData.assignee = null;
     if (updateData.taskStatus === "") updateData.taskStatus = null;
 
-    // ✅ Remove issue-only enum fields entirely to avoid enum validation errors
+    // ✅ Remove issue-only enum fields to avoid enum validation errors
     delete updateData.priority;
     delete updateData.issueType;
     delete updateData.severity;
@@ -163,6 +162,80 @@ export const deleteTask = async (req, res) => {
   }
 };
 
+// ─── BULK CREATE TASKS ────────────────────────────────────────────────────────
+
+export const bulkCreateTasks = async (req, res) => {
+  try {
+    const { tasks, project } = req.body;
+
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      return res.status(400).json({ error: "tasks array is required and must not be empty" });
+    }
+
+    const results  = [];
+    const failures = [];
+
+    for (const t of tasks) {
+      try {
+        if (!t.name || !t.description || !t.assignee) {
+          failures.push({
+            task: t.name || "(unnamed)",
+            reason: "name, description, and assignee are required",
+          });
+          continue;
+        }
+
+        const created = await Task.create({
+          type:        "task",
+          name:        t.name,
+          description: t.description,
+          taskStatus:  t.taskStatus || null,
+          assignee:    t.assignee,
+          project:     project || t.project || null,
+          media:       [],
+          // ✅ No issue-only fields
+        });
+
+        const populated = await Task.findById(created._id).populate(populate);
+        results.push(populated);
+
+        try {
+          const io = await getIO();
+          io.emit("task:created", populated);
+        } catch (ioErr) {
+          console.error("⚠️ Socket emit failed (non-fatal):", ioErr.message);
+        }
+
+        try {
+          if (populated.assignee?.email) {
+            await sendTaskMail({
+              email:       populated.assignee.email,
+              taskName:    populated.name,
+              description: populated.description || "—",
+              status:      populated.taskStatus?.name || "—",
+              assignedBy:  "Admin",
+            });
+          }
+        } catch (mailErr) {
+          console.error("⚠️ Bulk task mail failed (non-fatal):", mailErr.message);
+        }
+      } catch (taskErr) {
+        failures.push({ task: t.name || "(unnamed)", reason: taskErr.message });
+      }
+    }
+
+    res.status(201).json({
+      created:  results.length,
+      failed:   failures.length,
+      results,
+      failures,
+    });
+  } catch (err) {
+    console.error("❌ bulkCreateTasks:", err.message);
+    res.status(500).json({ error: "Bulk create failed", details: err.message });
+  }
+};
+
 // ─── ISSUES ──────────────────────────────────────────────────────────────────
 
 export const getIssues = async (req, res) => {
@@ -196,11 +269,10 @@ export const createIssue = async (req, res) => {
       assignee,
       project: project || null,
       media: getMediaPaths(req.files),
-      // ✅ Only set enum fields if they have a real value — never pass null/undefined/""
-      ...(priority   && { priority }),
-      ...(issueType  && { issueType }),
-      ...(severity   && { severity }),
-      ...(dueDate    && { dueDate }),
+      ...(priority  && { priority }),
+      ...(issueType && { issueType }),
+      ...(severity  && { severity }),
+      ...(dueDate   && { dueDate }),
     });
 
     const populated = await Task.findById(issue._id).populate(populate);
@@ -215,17 +287,17 @@ export const createIssue = async (req, res) => {
     try {
       if (populated.assignee?.email) {
         await sendIssueMail({
-          email: populated.assignee.email,
+          email:        populated.assignee.email,
           assigneeName: populated.assignee.name,
-          issueName: populated.name,
-          description: populated.description || "—",
-          issueType: populated.issueType,
-          priority: populated.priority,
-          severity: populated.severity,
-          status: populated.taskStatus?.name || "—",
-          project: populated.project?.name || null,
-          dueDate: populated.dueDate || null,
-          assignedBy: "Admin",
+          issueName:    populated.name,
+          description:  populated.description || "—",
+          issueType:    populated.issueType,
+          priority:     populated.priority,
+          severity:     populated.severity,
+          status:       populated.taskStatus?.name || "—",
+          project:      populated.project?.name || null,
+          dueDate:      populated.dueDate || null,
+          assignedBy:   "Admin",
         });
       }
     } catch (mailErr) {
@@ -247,7 +319,6 @@ export const updateIssue = async (req, res) => {
     if (updateData.assignee === "") updateData.assignee = null;
     if (updateData.taskStatus === "") updateData.taskStatus = null;
 
-    // ✅ Only keep enum fields if they have a real value
     if (!updateData.priority)  delete updateData.priority;
     if (!updateData.issueType) delete updateData.issueType;
     if (!updateData.severity)  delete updateData.severity;
@@ -272,17 +343,17 @@ export const updateIssue = async (req, res) => {
     try {
       if (issue.assignee?.email) {
         await sendIssueMail({
-          email: issue.assignee.email,
+          email:        issue.assignee.email,
           assigneeName: issue.assignee.name,
-          issueName: issue.name,
-          description: issue.description || "—",
-          issueType: issue.issueType,
-          priority: issue.priority,
-          severity: issue.severity,
-          status: issue.taskStatus?.name || "—",
-          project: issue.project?.name || null,
-          dueDate: issue.dueDate || null,
-          assignedBy: "Admin",
+          issueName:    issue.name,
+          description:  issue.description || "—",
+          issueType:    issue.issueType,
+          priority:     issue.priority,
+          severity:     issue.severity,
+          status:       issue.taskStatus?.name || "—",
+          project:      issue.project?.name || null,
+          dueDate:      issue.dueDate || null,
+          assignedBy:   "Admin",
         });
       }
     } catch (mailErr) {

@@ -68,7 +68,7 @@ export const sendTaskMail = async ({ email, taskName, description, status, assig
         </tr>
         <tr>
           <td style="padding:0 36px 32px;" align="center">
-            <a href="#" style="display:inline-block;background:linear-gradient(135deg,#2b6cb0,#3182ce);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Task →</a>
+            <a href="${process.env.FRONTEND_URL}/tasks" style="display:inline-block;background:linear-gradient(135deg,#2b6cb0,#3182ce);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Task →</a>
           </td>
         </tr>
         <tr>
@@ -147,8 +147,8 @@ export const sendIssueMail = async ({
         <tr>
           <td style="padding:20px 36px;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;border-collapse:collapse;">
-              ${status   ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;width:36%;border-bottom:1px solid #e2e8f0;">Status</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;border-bottom:1px solid #e2e8f0;">${status}</td></tr>` : ""}
-              ${project  ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;border-bottom:1px solid #e2e8f0;">Project</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;border-bottom:1px solid #e2e8f0;">📁 ${project}</td></tr>` : ""}
+              ${status     ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;width:36%;border-bottom:1px solid #e2e8f0;">Status</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;border-bottom:1px solid #e2e8f0;">${status}</td></tr>` : ""}
+              ${project    ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;border-bottom:1px solid #e2e8f0;">Project</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;border-bottom:1px solid #e2e8f0;">📁 ${project}</td></tr>` : ""}
               ${assignedBy ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;${formattedDue ? "border-bottom:1px solid #e2e8f0;" : ""}">Assigned By</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;${formattedDue ? "border-bottom:1px solid #e2e8f0;" : ""}">${assignedBy}</td></tr>` : ""}
               ${formattedDue ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;">Due Date</td><td style="padding:11px 16px;font-size:13px;color:#e53e3e;font-weight:600;">📅 ${formattedDue}</td></tr>` : ""}
             </table>
@@ -156,7 +156,7 @@ export const sendIssueMail = async ({
         </tr>
         <tr>
           <td style="padding:0 36px 32px;" align="center">
-            <a href="#" style="display:inline-block;background:linear-gradient(135deg,#c53030,#e53e3e);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Issue →</a>
+            <a href="${process.env.FRONTEND_URL}/issues" style="display:inline-block;background:linear-gradient(135deg,#c53030,#e53e3e);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Issue →</a>
           </td>
         </tr>
         <tr>
@@ -210,16 +210,16 @@ export const sendProjectMail = async ({
         <tr>
           <td style="padding:20px 36px;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;border-collapse:collapse;">
-              ${status       ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;width:36%;border-bottom:1px solid #e2e8f0;">Status</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;border-bottom:1px solid #e2e8f0;">${status}</td></tr>` : ""}
+              ${status         ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;width:36%;border-bottom:1px solid #e2e8f0;">Status</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;border-bottom:1px solid #e2e8f0;">${status}</td></tr>` : ""}
               ${fmt(startDate) ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;border-bottom:1px solid #e2e8f0;">Start Date</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;border-bottom:1px solid #e2e8f0;">📅 ${fmt(startDate)}</td></tr>` : ""}
               ${fmt(endDate)   ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;border-bottom:1px solid #e2e8f0;">End Date</td><td style="padding:11px 16px;font-size:13px;color:#e53e3e;font-weight:600;border-bottom:1px solid #e2e8f0;">📅 ${fmt(endDate)}</td></tr>` : ""}
-              ${assignedBy   ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;">Added By</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;">${assignedBy}</td></tr>` : ""}
+              ${assignedBy     ? `<tr><td style="padding:11px 16px;background:#f7fafc;font-size:13px;color:#718096;font-weight:600;">Added By</td><td style="padding:11px 16px;font-size:13px;color:#2d3748;">${assignedBy}</td></tr>` : ""}
             </table>
           </td>
         </tr>
         <tr>
           <td style="padding:0 36px 32px;" align="center">
-            <a href="#" style="display:inline-block;background:linear-gradient(135deg,#276749,#38a169);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Project →</a>
+            <a href="${process.env.FRONTEND_URL}/projects" style="display:inline-block;background:linear-gradient(135deg,#276749,#38a169);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Project →</a>
           </td>
         </tr>
         <tr>
@@ -263,8 +263,6 @@ export const sendDocumentMail = async ({
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 0;">
     <tr><td align="center">
       <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
-
-        <!-- Header -->
         <tr>
           <td style="background:linear-gradient(135deg,#553c9a 0%,#6b46c1 100%);padding:32px 36px 28px;">
             <p style="margin:0 0 10px;font-size:28px;">📄</p>
@@ -272,21 +270,15 @@ export const sendDocumentMail = async ({
             <p style="margin:6px 0 0;color:rgba(255,255,255,0.8);font-size:14px;">Hi ${assigneeName || "there"}, a document has been assigned to you.</p>
           </td>
         </tr>
-
-        <!-- Title + Description -->
         <tr>
           <td style="padding:28px 36px 0;">
             <h2 style="margin:0 0 8px;font-size:18px;color:#1a202c;font-weight:700;">${documentTitle}</h2>
             ${description ? `<p style="margin:0;font-size:14px;color:#718096;line-height:1.6;">${description}</p>` : ""}
           </td>
         </tr>
-
-        <!-- Status Badge -->
         <tr>
           <td style="padding:16px 36px 0;">${badge(cap(status) || "Draft", sColor)}</td>
         </tr>
-
-        <!-- Details -->
         <tr>
           <td style="padding:20px 36px;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;border-collapse:collapse;">
@@ -295,15 +287,11 @@ export const sendDocumentMail = async ({
             </table>
           </td>
         </tr>
-
-        <!-- CTA -->
         <tr>
           <td style="padding:0 36px 32px;" align="center">
-            <a href="#" style="display:inline-block;background:linear-gradient(135deg,#553c9a,#6b46c1);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Document →</a>
+            <a href="${process.env.FRONTEND_URL}/documents" style="display:inline-block;background:linear-gradient(135deg,#553c9a,#6b46c1);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">View Document →</a>
           </td>
         </tr>
-
-        <!-- Footer -->
         <tr>
           <td style="background:#f7fafc;padding:18px 36px;border-top:1px solid #e2e8f0;">
             <p style="margin:0;font-size:12px;color:#a0aec0;text-align:center;">This is an automated notification. Please log in to the system to view full details.</p>
@@ -321,7 +309,7 @@ export const sendDocumentMail = async ({
 // ─── ACCESS REQUEST MAIL (to admin) ──────────────────────────────────────────
 export const sendAccessRequestMail = async ({
   adminEmail, adminName, requesterName, requesterEmail,
-  documentTitle, project, message,
+  documentTitle, project, message, reviewLink,
 }) => {
   const transporter = createTransporter();
 
@@ -337,8 +325,6 @@ export const sendAccessRequestMail = async ({
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6fb;padding:32px 0;">
     <tr><td align="center">
       <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
-
-        <!-- Header -->
         <tr>
           <td style="background:linear-gradient(135deg,#c05621 0%,#dd6b20 100%);padding:32px 36px 28px;">
             <p style="margin:0 0 10px;font-size:28px;">🔐</p>
@@ -346,16 +332,12 @@ export const sendAccessRequestMail = async ({
             <p style="margin:6px 0 0;color:rgba(255,255,255,0.8);font-size:14px;">Hi ${adminName || "Admin"}, a user is requesting document access.</p>
           </td>
         </tr>
-
-        <!-- Document Info -->
         <tr>
           <td style="padding:28px 36px 0;">
             <h2 style="margin:0 0 6px;font-size:18px;color:#1a202c;font-weight:700;">${documentTitle}</h2>
             ${project ? `<p style="margin:0;font-size:13px;color:#718096;">📁 ${project}</p>` : ""}
           </td>
         </tr>
-
-        <!-- Details -->
         <tr>
           <td style="padding:20px 36px;">
             <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;border-collapse:collapse;">
@@ -375,8 +357,6 @@ export const sendAccessRequestMail = async ({
             </table>
           </td>
         </tr>
-
-        <!-- Warning notice -->
         <tr>
           <td style="padding:0 36px 28px;">
             <div style="background:#fffbeb;border:1px solid #f6e05e;border-radius:10px;padding:14px 18px;">
@@ -386,15 +366,11 @@ export const sendAccessRequestMail = async ({
             </div>
           </td>
         </tr>
-
-        <!-- CTA -->
         <tr>
           <td style="padding:0 36px 32px;" align="center">
-            <a href="#" style="display:inline-block;background:linear-gradient(135deg,#c05621,#dd6b20);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">Review Request →</a>
+            <a href="${reviewLink || process.env.FRONTEND_URL + '/documents'}" style="display:inline-block;background:linear-gradient(135deg,#c05621,#dd6b20);color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">Review Request →</a>
           </td>
         </tr>
-
-        <!-- Footer -->
         <tr>
           <td style="background:#f7fafc;padding:18px 36px;border-top:1px solid #e2e8f0;">
             <p style="margin:0;font-size:12px;color:#a0aec0;text-align:center;">This is an automated notification. Please log in to the system to view full details.</p>
@@ -410,8 +386,9 @@ export const sendAccessRequestMail = async ({
 };
 
 // ─── ACCESS GRANTED / DENIED MAIL (to requester) ─────────────────────────────
+// ✅ Now accepts viewLink — when approved, email contains a real "View Document" button
 export const sendAccessResponseMail = async ({
-  email, requesterName, documentTitle, project, approved,
+  email, requesterName, documentTitle, project, approved, viewLink,
 }) => {
   const transporter = createTransporter();
 
@@ -424,11 +401,13 @@ export const sendAccessResponseMail = async ({
     ? `Great news, ${requesterName || "there"}! Your request has been approved.`
     : `Hi ${requesterName || "there"}, your request could not be approved at this time.`;
   const bodyMsg = approved
-    ? `You now have access to <strong>${documentTitle}</strong>. Please log in to view it.`
+    ? `You now have access to <strong>${documentTitle}</strong>. Click the button below to view it directly.`
     : `Your access request for <strong>${documentTitle}</strong> has been denied. Please contact your admin for more information.`;
   const bgColor  = approved ? "#f0fff4" : "#fff5f5";
   const bdrColor = approved ? "#9ae6b4" : "#feb2b2";
   const txtColor = approved ? "#276749" : "#c53030";
+  const ctaHref  = viewLink || "#";
+  const ctaLabel = approved ? "View Document →" : "Contact Admin →";
 
   const info = await transporter.sendMail({
     from: process.env.EMAIL_USER,
@@ -469,11 +448,22 @@ export const sendAccessResponseMail = async ({
           </td>
         </tr>
 
+        <!-- ✅ Expiry notice — only shown when approved and viewLink is present -->
+        ${approved && viewLink ? `
+        <tr>
+          <td style="padding:0 36px 16px;">
+            <p style="margin:0;font-size:12px;color:#a0aec0;text-align:center;">
+              🔗 This link is valid for <strong>7 days</strong>. After that, please log in directly.
+            </p>
+          </td>
+        </tr>` : ""}
+
         <!-- CTA -->
         <tr>
           <td style="padding:0 36px 32px;" align="center">
-            <a href="#" style="display:inline-block;background:${gradient};color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">
-              ${approved ? "View Document →" : "Contact Admin →"}
+            <a href="${ctaHref}"
+               style="display:inline-block;background:${gradient};color:#ffffff;font-size:14px;font-weight:600;padding:12px 32px;border-radius:8px;text-decoration:none;">
+              ${ctaLabel}
             </a>
           </td>
         </tr>

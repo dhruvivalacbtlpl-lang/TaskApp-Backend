@@ -16,7 +16,7 @@ const populate = [
   { path: "project",             select: "name" },
   { path: "assignee",            select: "name email" },
   { path: "createdBy",           select: "name email" },
-  { path: "allowedUsers",        select: "name email" },   // ✅ NEW
+  { path: "allowedUsers",        select: "name email" },
   { path: "accessRequests.user", select: "name email role" },
 ];
 
@@ -243,6 +243,9 @@ export const requestAccess = async (req, res) => {
     doc.accessRequests.push({ user: currentUser._id, message: message || "", status: "pending" });
     await doc.save();
 
+    // ✅ Get the ID of the request we just created
+    const newRequest = doc.accessRequests[doc.accessRequests.length - 1];
+
     try {
       const admins = await Staff.find({}).populate("role", "name");
       const adminList = admins.filter(
@@ -257,6 +260,8 @@ export const requestAccess = async (req, res) => {
           documentTitle:  doc.title,
           project:        doc.project?.name || null,
           message:        message || "",
+          // ✅ Pass requestId so admin sees only this specific request in popup
+          reviewLink: `${process.env.FRONTEND_URL}/go?p=documents&requestId=${newRequest._id}`,
         });
       }
     } catch (mailErr) {
@@ -289,7 +294,8 @@ export const respondToAccessRequest = async (req, res) => {
 
     request.status = status;
 
-    // ✅ If approved — add user to allowedUsers so they can see the doc
+    // ✅ If approved — add user to allowedUsers
+    let accessToken = null;
     if (status === "approved") {
       const userId = request.user?._id || request.user;
       const alreadyAllowed = doc.allowedUsers.some(
@@ -298,11 +304,21 @@ export const respondToAccessRequest = async (req, res) => {
       if (!alreadyAllowed) {
         doc.allowedUsers.push(userId);
       }
+
+      // ✅ Generate a signed token valid for 7 days for the email link
+      accessToken = jwt.sign(
+        {
+          userId: userId.toString(),
+          docId:  doc._id.toString(),
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" }
+      );
     }
 
     await doc.save();
 
-    // ✅ Emit socket so frontend updates in real time without refresh
+    // ✅ Emit socket so frontend updates in real time
     try {
       const updatedDoc = await Document.findById(doc._id).populate([
         { path: "project",      select: "name" },
@@ -316,14 +332,20 @@ export const respondToAccessRequest = async (req, res) => {
       console.error("⚠️ Socket emit failed (non-fatal):", ioErr.message);
     }
 
+    // ✅ Send email with real View Document link when approved
     try {
       if (request.user?.email) {
+        const viewLink = status === "approved" && accessToken
+          ? `${process.env.FRONTEND_URL}/go?p=documents&token=${accessToken}&docId=${doc._id}`
+          : null;
+
         await sendAccessResponseMail({
           email:         request.user.email,
           requesterName: request.user.name,
           documentTitle: doc.title,
           project:       doc.project?.name || null,
           approved:      status === "approved",
+          viewLink,
         });
       }
     } catch (mailErr) {
@@ -335,4 +357,26 @@ export const respondToAccessRequest = async (req, res) => {
     console.error("❌ respondToAccessRequest:", err.message);
     res.status(500).json({ error: "Failed to update access request" });
   }
-};  
+};
+
+// ─── VERIFY DOCUMENT TOKEN ────────────────────────────────────────────────────
+// Called by frontend when user opens the email link
+// GET /api/documents/verify-token?token=xxx&docId=yyy
+export const verifyDocumentToken = async (req, res) => {
+  try {
+    const { token, docId } = req.query;
+    if (!token)  return res.status(401).json({ error: "No token provided" });
+    if (!docId)  return res.status(400).json({ error: "No docId provided" });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Make sure token is for this specific document
+    if (decoded.docId !== docId) {
+      return res.status(403).json({ error: "Token is not valid for this document" });
+    }
+
+    res.json({ valid: true, userId: decoded.userId, docId: decoded.docId });
+  } catch (err) {
+    res.status(401).json({ error: "Invalid or expired token" });
+  }
+};
