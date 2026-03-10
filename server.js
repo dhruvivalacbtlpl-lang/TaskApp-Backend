@@ -41,6 +41,16 @@ const corsOptions = {
     }
   },
   credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Origin",
+  ],
+  exposedHeaders: ["Content-Range", "X-Content-Range"],
+  maxAge: 86400, // cache preflight for 24h — browser won't re-send OPTIONS
 };
 
 /* ================= SOCKET.IO ================= */
@@ -59,15 +69,19 @@ const __dirname  = path.dirname(__filename);
 
 /* ================= MIDDLEWARE ================= */
 app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
+app.options("*", cors(corsOptions)); // ✅ handle ALL preflight requests immediately
 app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: "100mb" }));                       // ✅ increased for bulk uploads
+app.use(express.urlencoded({ limit: "100mb", extended: true })); // ✅ increased for bulk uploads
+
+// ✅ Explicit preflight handler for bulk routes (large payload CORS fix)
+app.options("/api/tasks/issues/bulk", cors(corsOptions));
+app.options("/api/tasks/bulk",        cors(corsOptions));
 
 /* ================= STATIC FILES ================= */
 app.use("/uploads/images",    express.static(path.join(__dirname, "uploads/images")));
 app.use("/uploads/videos",    express.static(path.join(__dirname, "uploads/videos")));
-app.use("/uploads/documents", express.static(path.join(__dirname, "uploads/documents"))); // ✅ NEW
+app.use("/uploads/documents", express.static(path.join(__dirname, "uploads/documents")));
 
 /* ================= API ROUTES ================= */
 app.use("/api/auth",        authRoutes);
@@ -92,3 +106,7 @@ createRolesIfNotExist();
 /* ================= START ================= */
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+// ✅ Increase timeout for large bulk uploads (200k rows can take a few seconds)
+httpServer.timeout         = 120000; // 2 minutes
+httpServer.keepAliveTimeout = 120000;
