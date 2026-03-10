@@ -89,7 +89,7 @@ export const getAccessRequests = async (req, res) => {
 export const createDocument = async (req, res) => {
   try {
     const currentUser = await getUserFromToken(req);
-    const { title, description, status, project, assignee } = req.body;
+    const { title, description, status, project, assignee, content } = req.body;
 
     if (!title || !description) {
       return res.status(400).json({ error: "title and description are required" });
@@ -105,6 +105,7 @@ export const createDocument = async (req, res) => {
     const doc = await Document.create({
       title,
       description,
+      content:   content  || "",    // ✅ CKEditor content
       status:    status   || "draft",
       project:   project  || null,
       assignee:  assignee || null,
@@ -152,6 +153,11 @@ export const updateDocument = async (req, res) => {
 
     if (updateData.project  === "") updateData.project  = null;
     if (updateData.assignee === "") updateData.assignee = null;
+
+    // ✅ Ensure content is always saved (even if empty string)
+    if (updateData.content === undefined) {
+      delete updateData.content; // don't overwrite if not sent
+    }
 
     if (req.file) {
       updateData.file = {
@@ -260,7 +266,6 @@ export const requestAccess = async (req, res) => {
           documentTitle:  doc.title,
           project:        doc.project?.name || null,
           message:        message || "",
-          // ✅ Pass requestId so admin sees only this specific request in popup
           reviewLink: `${process.env.FRONTEND_URL}/go?p=documents&requestId=${newRequest._id}`,
         });
       }
@@ -360,8 +365,6 @@ export const respondToAccessRequest = async (req, res) => {
 };
 
 // ─── VERIFY DOCUMENT TOKEN ────────────────────────────────────────────────────
-// Called by frontend when user opens the email link
-// GET /api/documents/verify-token?token=xxx&docId=yyy
 export const verifyDocumentToken = async (req, res) => {
   try {
     const { token, docId } = req.query;
@@ -370,7 +373,6 @@ export const verifyDocumentToken = async (req, res) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Make sure token is for this specific document
     if (decoded.docId !== docId) {
       return res.status(403).json({ error: "Token is not valid for this document" });
     }

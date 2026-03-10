@@ -11,6 +11,7 @@ const documentSchema = new mongoose.Schema(
   {
     title:       { type: String, required: true, trim: true },
     description: { type: String, required: true, trim: true },
+    content:     { type: String, default: "" }, // ✅ CKEditor HTML content
     status: {
       type: String,
       enum: ["draft", "active", "review", "archived"],
