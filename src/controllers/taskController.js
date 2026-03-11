@@ -1,9 +1,13 @@
 // controllers/taskController.js
 import Task from "../models/Task.js";
+import * as XLSX from "xlsx";
 
-const getIO = async () => {
-  const mod = await import("../../server.js");
-  return mod.io;
+const CHUNK_SIZE      = 5_000;
+const PARALLEL_CHUNKS = 4;
+const MAX_ROWS        = 1_100_000;
+
+const emit = async (event, data) => {
+  try { const { io } = await import("../../server.js"); if (io) io.emit(event, data); } catch {}
 };
 
 const populate = [
@@ -12,20 +16,150 @@ const populate = [
   { path: "project",  select: "name" },
 ];
 
-const getMediaPaths = (files = []) =>
-  files.map((f) => f.path.replace(/\\/g, "/"));
+// ── Parse xlsx buffer (backend only) ─────────────────────────────────────────
+function parseXlsx(buffer) {
+  const wb  = XLSX.read(buffer, { type: "buffer", dense: true });
+  const ws  = wb.Sheets[wb.SheetNames[0]];
+  const raw = XLSX.utils.sheet_to_json(ws, { defval: "" });
+  const rows = [];
+  for (const row of raw) {
+    const n = Object.fromEntries(Object.entries(row).map(([k,v]) => [k.trim().toLowerCase(), v]));
+    const name   = String(n.name || n.title || n["issue name"] || n["task name"] || "").trim();
+    const assign = String(n.assignee || n["assigned to"] || n.staff || "").trim();
+    if (!name || !assign) continue;
+    const dv = n["due date"] || n.duedate || n.due || "";
+    let dueDate = null;
+    if (dv) {
+      const d = typeof dv === "number"
+        ? new Date(Math.round((dv - 25569) * 86400000))
+        : new Date(dv);
+      if (!isNaN(d)) dueDate = d.toISOString().split("T")[0];
+    }
+    const priority = String(n.priority || "medium").toLowerCase();
+    const severity = String(n.severity || "minor").toLowerCase();
+    rows.push({
+      name, assigneeName: assign,
+      description: String(n.description || n.desc || "").trim(),
+      statusName:  String(n.status || n["task status"] || "").trim(),
+      priority:  ["low","medium","high","critical"].includes(priority) ? priority : "medium",
+      severity:  ["minor","moderate","major","critical"].includes(severity) ? severity : "minor",
+      issueType: "bug",
+      dueDate,
+    });
+  }
+  return rows;
+}
 
-// ─── TASKS ────────────────────────────────────────────────────────────────────
+// ── Parallel chunked insertMany ───────────────────────────────────────────────
+async function parallelInsert(docs) {
+  const chunks = [];
+  for (let i = 0; i < docs.length; i += CHUNK_SIZE)
+    chunks.push(docs.slice(i, i + CHUNK_SIZE));
+
+  let created = 0, duplicates = 0;
+  for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
+    const results = await Promise.allSettled(
+      chunks.slice(i, i + PARALLEL_CHUNKS).map(c =>
+        Task.insertMany(c, { ordered: false, lean: true })
+      )
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        created += r.value.length;
+      } else {
+        const ins = r.reason?.insertedDocs?.length ?? r.reason?.result?.result?.nInserted ?? 0;
+        created    += ins;
+        duplicates += CHUNK_SIZE - ins;
+      }
+    }
+  }
+  return { created, duplicates };
+}
+
+// ── Shared bulk handler ───────────────────────────────────────────────────────
+async function handleBulk(req, res, category) {
+  try {
+    const Staff      = (await import("../models/Staff.js")).default;
+    const TaskStatus = (await import("../models/TaskStatus.js")).default;
+
+    let rows = [];
+    if (req.file) {
+      rows = parseXlsx(req.file.buffer);
+    } else {
+      const body = req.body?.tasks || req.body?.issues;
+      if (!Array.isArray(body) || !body.length)
+        return res.status(400).json({ error: "Send file (form-data key='file') or tasks[]/issues[] in body." });
+      rows = body;
+    }
+
+    if (!rows.length)
+      return res.status(400).json({ error: "No valid rows. File must have 'name' and 'assignee' columns." });
+    if (rows.length > MAX_ROWS)
+      return res.status(413).json({ error: `Max ${MAX_ROWS.toLocaleString()} rows.` });
+
+    const project = req.body?.project || null;
+
+    const [allStaff, allStatuses] = await Promise.all([
+      Staff.find({}, { name: 1 }).lean(),
+      TaskStatus.find({}, { name: 1 }).lean(),
+    ]);
+    const staffMap  = new Map(allStaff.map(s  => [s.name.toLowerCase().trim(), s._id]));
+    const statusMap = new Map(allStatuses.map(s => [s.name.toLowerCase().trim(), s._id]));
+
+    const docs = [], unmatched = new Set();
+    let failed = 0;
+
+    for (const r of rows) {
+      const assigneeId = staffMap.get((r.assigneeName||"").toLowerCase().trim());
+      if (!assigneeId) { unmatched.add(r.assigneeName); failed++; continue; }
+      const doc = {
+        category, name: r.name,
+        description: r.description || "",
+        taskStatus:  r.statusName ? statusMap.get(r.statusName.toLowerCase().trim()) || null : null,
+        assignee: assigneeId,
+        project:  project || null,
+        media: [],
+      };
+      if (category === "issue") {
+        doc.priority  = r.priority  || "medium";
+        doc.issueType = r.issueType || "bug";
+        doc.severity  = r.severity  || "minor";
+        doc.dueDate   = r.dueDate   || null;
+      }
+      docs.push(doc);
+    }
+
+    if (!docs.length)
+      return res.status(200).json({
+        created: 0, failed, duplicates: 0, totalRows: rows.length,
+        unmatchedAssignees: [...unmatched].slice(0,10),
+        message: "0 inserted — assignee names must match Staff exactly",
+      });
+
+    const { created, duplicates } = await parallelInsert(docs);
+    await emit(`${category}s:bulkCreated`, { count: created });
+
+    return res.status(201).json({
+      created, failed: failed + duplicates, duplicates,
+      totalRows: rows.length,
+      unmatchedAssignees: [...unmatched].slice(0,10),
+      message: `${created.toLocaleString()} ${category}s inserted`,
+    });
+  } catch (err) {
+    console.error(`bulk ${category}:`, err.message);
+    res.status(500).json({ error: `Bulk ${category} failed`, details: err.message });
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TASKS
+// ═════════════════════════════════════════════════════════════════════════════
 
 export const getTasks = async (req, res) => {
   try {
-    const tasks = await Task.find({
-      $or: [{ type: "task" }, { type: { $exists: false } }, { type: null }],
-    }).populate(populate).sort({ createdAt: -1 });
+    const tasks = await Task.find({ category: "task" }).populate(populate).sort({ createdAt: -1 });
     res.json(tasks);
-  } catch {
-    res.status(500).json({ error: "Failed to fetch tasks" });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const getTaskById = async (req, res) => {
@@ -33,268 +167,122 @@ export const getTaskById = async (req, res) => {
     const task = await Task.findById(req.params.id).populate(populate);
     if (!task) return res.status(404).json({ error: "Not found" });
     res.json(task);
-  } catch {
-    res.status(500).json({ error: "Failed to fetch task" });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const createTask = async (req, res) => {
   try {
     const { name, description, taskStatus, assignee, project } = req.body;
-    if (!name || !description || !assignee)
-      return res.status(400).json({ error: "name, description, and assignee are required" });
-
-    const task      = await Task.create({ type: "task", name, description, taskStatus: taskStatus || null, assignee, project: project || null, media: getMediaPaths(req.files) });
-    const populated = await Task.findById(task._id).populate(populate);
-    try { const io = await getIO(); io.emit("task:created", populated); } catch {}
-    res.status(201).json(populated);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to create task", details: err.message });
-  }
+    if (!name || !assignee) return res.status(400).json({ error: "name and assignee required" });
+    const task = await Task.create({ category:"task", name, description:description||"", taskStatus:taskStatus||null, assignee, project:project||null, media:[] });
+    const pop  = await Task.findById(task._id).populate(populate);
+    await emit("task:created", pop);
+    res.status(201).json(pop);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const updateTask = async (req, res) => {
   try {
-    const updateData = { ...req.body };
-    if (updateData.project    === "") updateData.project    = null;
-    if (updateData.assignee   === "") updateData.assignee   = null;
-    if (updateData.taskStatus === "") updateData.taskStatus = null;
-    delete updateData.priority; delete updateData.issueType; delete updateData.severity;
-    if (req.files?.length) updateData.media = getMediaPaths(req.files);
-
-    const task = await Task.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: false }).populate(populate);
-    if (!task) return res.status(404).json({ error: "Task not found" });
-    try { const io = await getIO(); io.emit("task:updated", task); } catch {}
+    const data = { ...req.body };
+    if (data.project    === "") data.project    = null;
+    if (data.assignee   === "") data.assignee   = null;
+    if (data.taskStatus === "") data.taskStatus = null;
+    const task = await Task.findByIdAndUpdate(req.params.id, data, { new:true, runValidators:false }).populate(populate);
+    if (!task) return res.status(404).json({ error: "Not found" });
+    await emit("task:updated", task);
     res.json(task);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to update task", details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const deleteTask = async (req, res) => {
   try {
     await Task.findByIdAndDelete(req.params.id);
-    try { const io = await getIO(); io.emit("task:deleted", { _id: req.params.id }); } catch {}
+    await emit("task:deleted", { _id: req.params.id });
     res.json({ message: "Deleted" });
-  } catch {
-    res.status(500).json({ error: "Failed to delete task" });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const deleteAllTasks = async (req, res) => {
   try {
-    const result = await Task.deleteMany({
-      $or: [{ type: "task" }, { type: { $exists: false } }, { type: null }],
-    });
-    try { const io = await getIO(); io.emit("tasks:cleared"); } catch {}
-    res.json({ deleted: result.deletedCount });
-  } catch {
-    res.status(500).json({ error: "Failed to delete all tasks" });
-  }
+    const { deletedCount } = await Task.deleteMany({ category: "task" });
+    await emit("tasks:cleared", {});
+    res.json({ deleted: deletedCount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-// ─── BULK CREATE TASKS ────────────────────────────────────────────────────────
-// Receives ALL rows in one request. Uses insertMany for maximum speed.
-// 200k rows completes in ~1-2 seconds on MongoDB.
+export const bulkCreateTasks = (req, res) => handleBulk(req, res, "task");
 
-export const bulkCreateTasks = async (req, res) => {
-  try {
-    const { tasks, project } = req.body;
-    if (!Array.isArray(tasks) || tasks.length === 0)
-      return res.status(400).json({ error: "tasks array is required" });
+// ═════════════════════════════════════════════════════════════════════════════
+// ISSUES — server-side paginated GET
+// ═════════════════════════════════════════════════════════════════════════════
 
-    const Staff      = (await import("../models/Staff.js")).default;
-    const TaskStatus = (await import("../models/TaskStatus.js")).default;
-
-    // ✅ All DB lookups in parallel — single round trip
-    const incomingNames = tasks.map(t => t.name).filter(Boolean);
-    const [allStaff, allStatuses, existingDocs] = await Promise.all([
-      Staff.find({}, { name: 1 }).lean(),
-      TaskStatus.find({}, { name: 1 }).lean(),
-      Task.find(
-        { name: { $in: incomingNames }, $or: [{ type: "task" }, { type: { $exists: false } }, { type: null }] },
-        { name: 1 }
-      ).lean(),
-    ]);
-
-    const staffMap    = new Map(allStaff.map(s   => [s.name.toLowerCase().trim(), s._id]));
-    const statusMap   = new Map(allStatuses.map(s => [s.name.toLowerCase().trim(), s._id]));
-    const existingSet = new Set(existingDocs.map(e => e.name.toLowerCase().trim()));
-
-    const valid = [];
-    let failed  = 0;
-
-    for (const t of tasks) {
-      if (!t.name || !t.assigneeName) { failed++; continue; }
-      if (existingSet.has(t.name.toLowerCase().trim())) { failed++; continue; }
-      const assigneeId = staffMap.get(t.assigneeName.toLowerCase().trim());
-      if (!assigneeId) { failed++; continue; }
-      valid.push({
-        type:       "task",
-        name:       t.name,
-        description: t.description || "",
-        taskStatus: t.statusName ? statusMap.get(t.statusName.toLowerCase().trim()) || null : null,
-        assignee:   assigneeId,
-        project:    project || null,
-        media:      [],
-      });
-    }
-
-    if (valid.length === 0)
-      return res.status(200).json({ created: 0, failed });
-
-    // ✅ Single insertMany — fastest possible MongoDB write
-    // ordered: false = don't stop on duplicate key errors, maximises throughput
-    const inserted = await Task.insertMany(valid, { ordered: false });
-    try { const io = await getIO(); io.emit("tasks:bulkCreated", { count: inserted.length }); } catch {}
-
-    res.status(201).json({ created: inserted.length, failed });
-  } catch (err) {
-    // insertMany with ordered:false throws on duplicate keys but still inserts valid docs
-    // The result is in err.insertedDocs
-    if (err.insertedDocs?.length) {
-      return res.status(201).json({
-        created: err.insertedDocs.length,
-        failed:  (req.body.tasks?.length || 0) - err.insertedDocs.length,
-      });
-    }
-    res.status(500).json({ error: "Bulk create tasks failed", details: err.message });
-  }
-};
-
-// ─── ISSUES ───────────────────────────────────────────────────────────────────
-
+// GET /api/tasks/issues/all?page=1&limit=50&project=xxx
+// Returns: { issues[], total, page, pages }
+// Frontend paginates by calling this — never fetches all 1L at once
 export const getIssues = async (req, res) => {
   try {
-    const issues = await Task.find({ type: "issue" }).populate(populate).sort({ createdAt: -1 });
-    res.json(issues);
-  } catch {
-    res.status(500).json({ error: "Failed to fetch issues" });
-  }
+    const page    = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit   = Math.min(100, parseInt(req.query.limit) || 50);
+    const project = req.query.project || null;
+
+    const filter = { category: "issue" };
+    if (project) filter.project = project;
+
+    const [issues, total] = await Promise.all([
+      Task.find(filter)
+        .populate(populate)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Task.countDocuments(filter),
+    ]);
+
+    res.json({
+      issues,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      limit,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const createIssue = async (req, res) => {
   try {
     const { name, description, taskStatus, assignee, project, priority, issueType, severity, dueDate } = req.body;
-    if (!name || !description || !assignee)
-      return res.status(400).json({ error: "name, description, and assignee are required" });
-
-    const issue     = await Task.create({ type: "issue", name, description, taskStatus: taskStatus || null, assignee, project: project || null, media: getMediaPaths(req.files), ...(priority && { priority }), ...(issueType && { issueType }), ...(severity && { severity }), ...(dueDate && { dueDate }) });
-    const populated = await Task.findById(issue._id).populate(populate);
-    try { const io = await getIO(); io.emit("issue:created", populated); } catch {}
-    res.status(201).json(populated);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to create issue", details: err.message });
-  }
+    if (!name || !assignee) return res.status(400).json({ error: "name and assignee required" });
+    const issue = await Task.create({
+      category:"issue", name, description:description||"",
+      taskStatus:taskStatus||null, assignee, project:project||null,
+      media:[], priority:priority||"medium", issueType:issueType||"bug",
+      severity:severity||"minor", dueDate:dueDate||null,
+    });
+    const pop = await Task.findById(issue._id).populate(populate);
+    await emit("issue:created", pop);
+    res.status(201).json(pop);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const updateIssue = async (req, res) => {
   try {
-    const updateData = { ...req.body };
-    if (updateData.project    === "") updateData.project    = null;
-    if (updateData.assignee   === "") updateData.assignee   = null;
-    if (updateData.taskStatus === "") updateData.taskStatus = null;
-    if (!updateData.priority)  delete updateData.priority;
-    if (!updateData.issueType) delete updateData.issueType;
-    if (!updateData.severity)  delete updateData.severity;
-    if (req.files?.length) updateData.media = getMediaPaths(req.files);
-
-    const issue = await Task.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: false }).populate(populate);
-    if (!issue) return res.status(404).json({ error: "Issue not found" });
-    try { const io = await getIO(); io.emit("issue:updated", issue); } catch {}
+    const data = { ...req.body };
+    if (data.project    === "") data.project    = null;
+    if (data.assignee   === "") data.assignee   = null;
+    if (data.taskStatus === "") data.taskStatus = null;
+    const issue = await Task.findByIdAndUpdate(req.params.id, data, { new:true, runValidators:false }).populate(populate);
+    if (!issue) return res.status(404).json({ error: "Not found" });
+    await emit("issue:updated", issue);
     res.json(issue);
-  } catch (err) {
-    res.status(500).json({ error: "Failed to update issue", details: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 export const deleteAllIssues = async (req, res) => {
   try {
-    const result = await Task.deleteMany({ type: "issue" });
-    try { const io = await getIO(); io.emit("issues:cleared"); } catch {}
-    res.json({ deleted: result.deletedCount });
-  } catch {
-    res.status(500).json({ error: "Failed to delete all issues" });
-  }
+    const { deletedCount } = await Task.deleteMany({ category: "issue" });
+    await emit("issues:cleared", {});
+    res.json({ deleted: deletedCount });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-// ─── BULK CREATE ISSUES ───────────────────────────────────────────────────────
-// Receives ALL rows in one request. No loops, no batches on backend.
-// Uses insertMany with ordered:false for maximum throughput.
-// Benchmark: ~200k rows in 1-2 seconds on a standard MongoDB Atlas cluster.
-
-export const bulkCreateIssues = async (req, res) => {
-  try {
-    const { issues, project } = req.body;
-    if (!Array.isArray(issues) || issues.length === 0)
-      return res.status(400).json({ error: "issues array is required" });
-
-    const Staff      = (await import("../models/Staff.js")).default;
-    const TaskStatus = (await import("../models/TaskStatus.js")).default;
-
-    // ✅ All lookups in parallel — one round trip to DB regardless of row count
-    const incomingNames = issues.map(t => t.name).filter(Boolean);
-    const [allStaff, allStatuses, existingDocs] = await Promise.all([
-      Staff.find({}, { name: 1 }).lean(),
-      TaskStatus.find({}, { name: 1 }).lean(),
-      Task.find({ name: { $in: incomingNames }, type: "issue" }, { name: 1 }).lean(),
-    ]);
-
-    const staffMap    = new Map(allStaff.map(s   => [s.name.toLowerCase().trim(), s._id]));
-    const statusMap   = new Map(allStatuses.map(s => [s.name.toLowerCase().trim(), s._id]));
-    const existingSet = new Set(existingDocs.map(e => e.name.toLowerCase().trim()));
-
-    // ✅ Build valid docs array in one pass — O(n), no DB calls inside loop
-    const valid = [];
-    let failed  = 0;
-    const unmatchedAssignees = new Set();
-
-    for (const t of issues) {
-      if (!t.name || !t.assigneeName) { failed++; continue; }
-      if (existingSet.has(t.name.toLowerCase().trim())) { failed++; continue; }
-      const assigneeId = staffMap.get(t.assigneeName.toLowerCase().trim());
-      if (!assigneeId) {
-        unmatchedAssignees.add(t.assigneeName);
-        failed++;
-        continue;
-      }
-      valid.push({
-        type:        "issue",
-        name:        t.name,
-        description: t.description || "",
-        taskStatus:  t.statusName ? statusMap.get(t.statusName.toLowerCase().trim()) || null : null,
-        assignee:    assigneeId,
-        project:     project || null,
-        media:       [],
-        ...(t.priority  && { priority:  t.priority  }),
-        ...(t.issueType && { issueType: t.issueType }),
-        ...(t.severity  && { severity:  t.severity  }),
-        ...(t.dueDate   && { dueDate:   t.dueDate   }),
-      });
-    }
-
-    if (valid.length === 0)
-      return res.status(200).json({ created: 0, failed });
-
-    // ✅ Single insertMany — all docs in one MongoDB write operation
-    // ordered: false = continue on duplicate key errors, maximises throughput
-    const inserted = await Task.insertMany(valid, { ordered: false });
-    try { const io = await getIO(); io.emit("issues:bulkCreated", { count: inserted.length }); } catch {}
-
-    try { const io = await getIO(); io.emit("issues:bulkCreated", { count: inserted.length }); } catch {}
-    res.status(201).json({
-      created: inserted.length,
-      failed,
-      unmatchedAssignees: unmatchedAssignees.size > 0 ? [...unmatchedAssignees].slice(0, 5) : [],
-    });
-  } catch (err) {
-    // insertMany ordered:false throws BulkWriteError but still inserts valid docs
-    if (err.insertedDocs?.length) {
-      return res.status(201).json({
-        created: err.insertedDocs.length,
-        failed:  (req.body.issues?.length || 0) - err.insertedDocs.length,
-      });
-    }
-    res.status(500).json({ error: "Bulk create issues failed", details: err.message });
-  }
-};
+export const bulkCreateIssues = (req, res) => handleBulk(req, res, "issue");
