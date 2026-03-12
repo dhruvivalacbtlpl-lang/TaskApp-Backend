@@ -86,9 +86,9 @@ async function handleBulk(req, res, category) {
     if (req.file) {
       rows = parseXlsx(req.file.buffer);
     } else {
-      const body = req.body?.tasks || req.body?.issues;
+      const body = req.body?.tasks || req.body?.issues || (Array.isArray(req.body) ? req.body : null);
       if (!Array.isArray(body) || !body.length)
-        return res.status(400).json({ error: "Send file (form-data key='file') or tasks[]/issues[] in body." });
+        return res.status(400).json({ error: "Send file (form-data key='file') or tasks[]/issues[] array in body." });
       rows = body;
     }
 
@@ -170,28 +170,72 @@ export const getTaskById = async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
+// ✅ FIXED: reads req.body (populated by multer) + req.files for media
 export const createTask = async (req, res) => {
   try {
     const { name, description, taskStatus, assignee, project } = req.body;
-    if (!name || !assignee) return res.status(400).json({ error: "name and assignee required" });
-    const task = await Task.create({ category:"task", name, description:description||"", taskStatus:taskStatus||null, assignee, project:project||null, media:[] });
-    const pop  = await Task.findById(task._id).populate(populate);
+
+    if (!name || !assignee)
+      return res.status(400).json({ error: "name and assignee required" });
+
+    // Build media array from uploaded files (if any)
+    const media = (req.files || []).map(f => ({
+      url:          `data:${f.mimetype};base64,${f.buffer.toString("base64")}`,
+      originalName: f.originalname,
+      mimetype:     f.mimetype,
+      size:         f.size,
+    }));
+
+    const task = await Task.create({
+      category:    "task",
+      name,
+      description: description || "",
+      taskStatus:  taskStatus  || null,
+      assignee,
+      project:     project     || null,
+      media,
+      // ✅ Do NOT set priority/issueType/severity for tasks — those are issue-only
+      // Setting them to null fails enum validation on the Task model
+    });
+
+    const pop = await Task.findById(task._id).populate(populate);
     await emit("task:created", pop);
     res.status(201).json(pop);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
+// ✅ FIXED: reads req.body (populated by multer) + merges new media files
 export const updateTask = async (req, res) => {
   try {
     const data = { ...req.body };
     if (data.project    === "") data.project    = null;
     if (data.assignee   === "") data.assignee   = null;
     if (data.taskStatus === "") data.taskStatus = null;
-    const task = await Task.findByIdAndUpdate(req.params.id, data, { new:true, runValidators:false }).populate(populate);
+
+    // If new media files were uploaded, merge with existing
+    if (req.files && req.files.length > 0) {
+      const newMedia = req.files.map(f => ({
+        url:          `data:${f.mimetype};base64,${f.buffer.toString("base64")}`,
+        originalName: f.originalname,
+        mimetype:     f.mimetype,
+        size:         f.size,
+      }));
+      const existing = await Task.findById(req.params.id).select("media").lean();
+      data.media = [...(existing?.media || []), ...newMedia];
+    }
+
+    const task = await Task.findByIdAndUpdate(
+      req.params.id, data, { new: true, runValidators: false }
+    ).populate(populate);
+
     if (!task) return res.status(404).json({ error: "Not found" });
     await emit("task:updated", task);
     res.json(task);
-  } catch (err) { res.status(500).json({ error: err.message }); }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 };
 
 export const deleteTask = async (req, res) => {
@@ -216,9 +260,6 @@ export const bulkCreateTasks = (req, res) => handleBulk(req, res, "task");
 // ISSUES — server-side paginated GET
 // ═════════════════════════════════════════════════════════════════════════════
 
-// GET /api/tasks/issues/all?page=1&limit=50&project=xxx
-// Returns: { issues[], total, page, pages }
-// Frontend paginates by calling this — never fetches all 1L at once
 export const getIssues = async (req, res) => {
   try {
     const page    = Math.max(1, parseInt(req.query.page)  || 1);
@@ -251,12 +292,20 @@ export const getIssues = async (req, res) => {
 export const createIssue = async (req, res) => {
   try {
     const { name, description, taskStatus, assignee, project, priority, issueType, severity, dueDate } = req.body;
-    if (!name || !assignee) return res.status(400).json({ error: "name and assignee required" });
+    if (!name || !assignee)
+      return res.status(400).json({ error: "name and assignee required" });
     const issue = await Task.create({
-      category:"issue", name, description:description||"",
-      taskStatus:taskStatus||null, assignee, project:project||null,
-      media:[], priority:priority||"medium", issueType:issueType||"bug",
-      severity:severity||"minor", dueDate:dueDate||null,
+      category:    "issue",
+      name,
+      description: description || "",
+      taskStatus:  taskStatus  || null,
+      assignee,
+      project:     project     || null,
+      media:       [],
+      priority:    priority    || "medium",
+      issueType:   issueType   || "bug",
+      severity:    severity    || "minor",
+      dueDate:     dueDate     || null,
     });
     const pop = await Task.findById(issue._id).populate(populate);
     await emit("issue:created", pop);
@@ -270,7 +319,9 @@ export const updateIssue = async (req, res) => {
     if (data.project    === "") data.project    = null;
     if (data.assignee   === "") data.assignee   = null;
     if (data.taskStatus === "") data.taskStatus = null;
-    const issue = await Task.findByIdAndUpdate(req.params.id, data, { new:true, runValidators:false }).populate(populate);
+    const issue = await Task.findByIdAndUpdate(
+      req.params.id, data, { new: true, runValidators: false }
+    ).populate(populate);
     if (!issue) return res.status(404).json({ error: "Not found" });
     await emit("issue:updated", issue);
     res.json(issue);
@@ -285,4 +336,4 @@ export const deleteAllIssues = async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-export const bulkCreateIssues = (req, res) => handleBulk(req, res, "issue");
+export  const bulkCreateIssues = (req, res) => handleBulk(req, res, "issue");  
