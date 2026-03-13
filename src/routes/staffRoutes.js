@@ -1,222 +1,156 @@
-import express from "express";
-import Staff from "../models/Staff.js";
-import Role from "../models/Role.js";
-import bcrypt from "bcryptjs";
-import { sendStaffMail } from "../services/mail.js";
+import express    from "express";
+import bcrypt      from "bcryptjs";
+import Staff       from "../models/Staff.js";
+import Company     from "../models/Company.js";
+import { protect } from "../middleware/auth.js";
+import { sendWelcomeStaffMail } from "../services/mail.js";
 
 const router = express.Router();
 
-/* =========================
-   GET ALL STAFF
-========================= */
-router.get("/", async (req, res) => {
+/* ─── GET /api/staff ─────────────────────────────────────────────────────────
+ * Returns staff filtered by the logged-in user's company.
+ * If user has no company, returns all staff (backward compatible).
+ */
+router.get("/", protect, async (req, res) => {
   try {
-    const staff = await Staff.find().populate("role").sort({ createdAt: -1 });
-    res.json(staff);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* =========================
-   GET SINGLE STAFF BY ID
-========================= */
-router.get("/:id", async (req, res) => {
-  try {
-    const staff = await Staff.findById(req.params.id).populate("role");
-    if (!staff) return res.status(404).json({ error: "Staff not found" });
-    res.json(staff);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* =========================
-   CREATE STAFF + SEND EMAIL
-========================= */
-router.post("/create", async (req, res) => {
-  try {
-    const { name, email, mobile, role } = req.body;
-
-    // ✅ Check if selected role is Admin
-    const selectedRole = await Role.findById(role);
-    if (selectedRole?.name?.toLowerCase() === "admin") {
-      // ✅ Check if requester is admin via cookie token
-      const jwt = await import("jsonwebtoken");
-      const token = req.cookies?.token;
-      if (!token) {
-        return res.status(403).json({ error: "Only admins can create admin accounts" });
-      }
-      try {
-        const decoded = jwt.default.verify(token, process.env.JWT_SECRET);
-        const requester = await Staff.findById(decoded.id).populate("role");
-        if (requester?.role?.name?.toLowerCase() !== "admin") {
-          return res.status(403).json({ error: "Only admins can create admin accounts" });
-        }
-      } catch {
-        return res.status(403).json({ error: "Only admins can create admin accounts" });
-      }
+    const filter = {};
+    if (req.user?.company) {
+      filter.company = req.user.company;
     }
 
-    const exists = await Staff.findOne({ email });
-    if (exists)
-      return res.status(400).json({ error: "Email already exists" });
+    const staffList = await Staff.find(filter)
+      .select("-password")
+      .populate("role",    "name permissions")
+      .populate("company", "name");
 
-    const plainPassword = Math.random().toString(36).slice(-8);
-    const hashedPassword = await bcrypt.hash(plainPassword, 10);
+    return res.json(staffList);
+  } catch (err) {
+    console.error("❌ Get staff error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* ─── GET /api/staff/:id ─────────────────────────────────────────────────────── */
+router.get("/:id", protect, async (req, res) => {
+  try {
+    const staff = await Staff.findById(req.params.id)
+      .select("-password")
+      .populate("role",    "name permissions")
+      .populate("company", "name");
+
+    if (!staff) return res.status(404).json({ message: "Staff not found" });
+    return res.json(staff);
+  } catch (err) {
+    console.error("❌ Get staff by id error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* ─── POST /api/staff ────────────────────────────────────────────────────────
+ * Create staff. Password typed manually (not auto-generated).
+ * Inherits company from logged-in user. Sends welcome email.
+ */
+router.post("/", protect, async (req, res) => {
+  try {
+    const { name, email, mobile, password, role } = req.body;
+
+    if (!name?.trim())       return res.status(400).json({ message: "Name is required" });
+    if (!email?.trim())      return res.status(400).json({ message: "Email is required" });
+    if (!password)           return res.status(400).json({ message: "Password is required" });
+    if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
+
+    const existing = await Staff.findOne({ email: email.toLowerCase().trim() });
+    if (existing) return res.status(400).json({ message: "Email already in use" });
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    // Inherit company from the logged-in user (owner/admin)
+    const companyId = req.user?.company || null;
 
     const staff = await Staff.create({
-      name,
-      email,
-      mobile,
-      role,
+      name:     name.trim(),
+      email:    email.toLowerCase().trim(),
+      mobile:   mobile || "",
       password: hashedPassword,
+      role:     role || null,
+      company:  companyId,
+      isOwner:  false,
     });
 
-    await sendStaffMail(
-      email,
-      `Hello ${name},\n\nYour account has been created.\nEmail: ${email}\nPassword: ${plainPassword}\n\nPlease log in and change your password.`
-    );
-
-    const populatedStaff = await Staff.findById(staff._id).populate("role");
-    res.status(201).json(populatedStaff);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* =========================
-   UPDATE STAFF + SEND EMAIL
-========================= */
-router.put("/:id", async (req, res) => {
-  try {
-    // ✅ If trying to assign admin role, verify requester is admin
-    if (req.body.role) {
-      const selectedRole = await Role.findById(req.body.role);
-      if (selectedRole?.name?.toLowerCase() === "admin") {
-        const jwt = await import("jsonwebtoken");
-        const token = req.cookies?.token;
-        if (!token) {
-          return res.status(403).json({ error: "Only admins can assign admin role" });
-        }
-        try {
-          const decoded = jwt.default.verify(token, process.env.JWT_SECRET);
-          const requester = await Staff.findById(decoded.id).populate("role");
-          if (requester?.role?.name?.toLowerCase() !== "admin") {
-            return res.status(403).json({ error: "Only admins can assign admin role" });
-          }
-        } catch {
-          return res.status(403).json({ error: "Only admins can assign admin role" });
-        }
-      }
+    // Get company name for the email
+    let companyName = "TaskApp";
+    if (companyId) {
+      const company = await Company.findById(companyId).select("name");
+      if (company) companyName = company.name;
     }
 
-    const updatedStaff = await Staff.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    ).populate("role");
-
-    if (!updatedStaff)
-      return res.status(404).json({ error: "Staff not found" });
-
-    await sendStaffMail(
-      updatedStaff.email,
-      `Hello ${updatedStaff.name},\n\nYour profile has been updated by the admin.\n\nIf you did not expect this, please contact support.`
-    );
-
-    res.json(updatedStaff);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* =========================
-   DELETE STAFF
-========================= */
-router.delete("/:id", async (req, res) => {
-  try {
-    // ✅ Prevent deleting admin accounts if not admin
-    const staffToDelete = await Staff.findById(req.params.id).populate("role");
-    if (staffToDelete?.role?.name?.toLowerCase() === "admin") {
-      const jwt = await import("jsonwebtoken");
-      const token = req.cookies?.token;
-      if (!token) {
-        return res.status(403).json({ error: "Only admins can delete admin accounts" });
-      }
-      try {
-        const decoded = jwt.default.verify(token, process.env.JWT_SECRET);
-        const requester = await Staff.findById(decoded.id).populate("role");
-        if (requester?.role?.name?.toLowerCase() !== "admin") {
-          return res.status(403).json({ error: "Only admins can delete admin accounts" });
-        }
-      } catch {
-        return res.status(403).json({ error: "Only admins can delete admin accounts" });
-      }
-    }
-
-    const deletedStaff = await Staff.findByIdAndDelete(req.params.id);
-    if (!deletedStaff)
-      return res.status(404).json({ error: "Staff not found" });
-
-    res.json({ message: "Staff deleted" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/* =========================
-   STAFF LOGIN
-========================= */
-router.post("/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    const staff = await Staff.findOne({ email });
-    if (!staff)
-      return res.status(404).json({ error: "Staff not found" });
-
-    const isMatch = await bcrypt.compare(password, staff.password);
-    if (!isMatch)
-      return res.status(401).json({ error: "Invalid password" });
-
-    res.json({
-      message: "Login successful",
-      staff: {
-        id: staff._id,
-        name: staff.name,
-        email: staff.email,
-        role: staff.role,
-      },
+    // Send welcome email with credentials
+    await sendWelcomeStaffMail({
+      name:        name.trim(),
+      email:       email.toLowerCase().trim(),
+      password,    // plain text — for the email only
+      companyName,
     });
+
+    const populated = await Staff.findById(staff._id)
+      .select("-password")
+      .populate("role",    "name permissions")
+      .populate("company", "name");
+
+    return res.status(201).json(populated);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ Create staff error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 
-/* =========================
-   NOTIFY STAFF (CUSTOM MESSAGE)
-========================= */
-router.post("/:id/notify", async (req, res) => {
+/* ─── PUT /api/staff/:id ─────────────────────────────────────────────────────── */
+router.put("/:id", protect, async (req, res) => {
   try {
-    const { message } = req.body;
+    const { name, email, mobile, role, password } = req.body;
 
     const staff = await Staff.findById(req.params.id);
-    if (!staff)
-      return res.status(404).json({ error: "Staff not found" });
+    if (!staff) return res.status(404).json({ message: "Staff not found" });
 
-    await sendStaffMail(staff.email, message);
+    if (name)                staff.name   = name.trim();
+    if (email)               staff.email  = email.toLowerCase().trim();
+    if (mobile !== undefined) staff.mobile = mobile;
+    if (role)                staff.role   = role;
 
-    res.json({ message: "Notification sent" });
+    if (password) {
+      if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
+      staff.password = await bcrypt.hash(password, 12);
+    }
+
+    await staff.save();
+
+    const updated = await Staff.findById(staff._id)
+      .select("-password")
+      .populate("role",    "name permissions")
+      .populate("company", "name");
+
+    return res.json(updated);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    console.error("❌ Update staff error:", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/* ─── DELETE /api/staff/:id ──────────────────────────────────────────────────── */
+router.delete("/:id", protect, async (req, res) => {
+  try {
+    const staff = await Staff.findById(req.params.id);
+    if (!staff) return res.status(404).json({ message: "Staff not found" });
+
+    if (staff.isOwner) {
+      return res.status(403).json({ message: "Cannot delete the company owner" });
+    }
+
+    await staff.deleteOne();
+    return res.json({ message: "Staff deleted successfully" });
+  } catch (err) {
+    console.error("❌ Delete staff error:", err);
+    return res.status(500).json({ message: "Server error" });
   }
 });
 

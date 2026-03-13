@@ -25,47 +25,27 @@ dotenv.config();
 const app        = express();
 const httpServer = createServer(app);
 
-/* ─── TRUST PROXY (required for dev tunnels / reverse proxies) ──────────────── */
-app.set("trust proxy", 1);
-
 /* ─── ALLOWED ORIGINS ───────────────────────────────────────────────────────── */
 const allowedOrigins = [
   "http://localhost:5173",
-  "http://localhost:3000",
   "https://w2ml73xv-5173.inc1.devtunnels.ms",
-  "https://w2ml73xv-3000.inc1.devtunnels.ms",
 ];
 
 /* ─── CORS ───────────────────────────────────────────────────────────────────── */
 const corsOptions = {
   origin: (origin, callback) => {
-    console.log("🔍 Request origin:", origin); // helpful for debugging
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.warn(`🚫 CORS blocked: ${origin}`);
       callback(new Error(`CORS blocked: ${origin}`));
     }
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "X-Requested-With",
-    "Accept",
-    "Origin",
-  ],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
   exposedHeaders: ["Content-Range", "X-Content-Range"],
   maxAge: 86400,
 };
-
-/* ─── MIDDLEWARE (order matters — cors & preflight FIRST) ────────────────────── */
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // handle ALL preflight requests
-app.use(cookieParser());
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 /* ─── SOCKET.IO ──────────────────────────────────────────────────────────────── */
 export const io = new Server(httpServer, { cors: corsOptions });
@@ -80,60 +60,89 @@ const docRooms = {};
 io.on("connection", (socket) => {
   console.log("⚡ Client connected:", socket.id);
 
+  /* ── User opens a document (viewer or editor) ──────────────────────────────
+   * Payload: { docId, userId, name, avatar, mode: "viewing" | "editing" }
+   */
   socket.on("document:join", ({ docId, userId, name, avatar, mode }) => {
     if (!docId) return;
+
+    // Leave any previous doc room this socket was in
     leaveAllDocRooms(socket);
+
+    // Join the new room
     socket.join(`doc:${docId}`);
+
+    // Store user info
     if (!docRooms[docId]) docRooms[docId] = {};
     docRooms[docId][socket.id] = { userId, name, avatar: avatar || "", mode };
+
+    // Tell everyone else in the room (not the joiner) who is present
     socket.to(`doc:${docId}`).emit("document:presence", {
       docId,
       users: getRoomUsers(docId),
     });
+
+    // Also tell the joiner who is already here
     socket.emit("document:presence", {
       docId,
       users: getRoomUsers(docId),
     });
+
     console.log(`👁 ${name} joined doc:${docId} as [${mode}]`);
   });
 
+  /* ── User switches from viewing → editing ───────────────────────────────── */
   socket.on("document:start_editing", ({ docId, userId, name }) => {
     if (!docId || !docRooms[docId]?.[socket.id]) return;
+
     docRooms[docId][socket.id].mode = "editing";
+
+    // Broadcast to everyone in the room (including sender) that this person is editing
     io.to(`doc:${docId}`).emit("document:editing_started", {
       docId,
       userId,
       name,
       users: getRoomUsers(docId),
     });
+
     console.log(`✏️  ${name} started editing doc:${docId}`);
   });
 
+  /* ── User stops editing (saves or cancels) ──────────────────────────────── */
   socket.on("document:stop_editing", ({ docId, userId, name }) => {
     if (!docId || !docRooms[docId]?.[socket.id]) return;
+
     docRooms[docId][socket.id].mode = "viewing";
+
     io.to(`doc:${docId}`).emit("document:editing_stopped", {
       docId,
       userId,
       name,
       users: getRoomUsers(docId),
     });
+
     console.log(`💾 ${name} stopped editing doc:${docId}`);
   });
 
+  /* ── Document was saved — notify viewers to reload ─────────────────────── */
   socket.on("document:saved", ({ docId, userId, name }) => {
     if (!docId) return;
+
+    // Broadcast to everyone EXCEPT the saver
     socket.to(`doc:${docId}`).emit("document:updated_by_other", {
       docId,
       savedBy: name,
     });
+
     console.log(`💾 ${name} saved doc:${docId} — notified others`);
   });
 
+  /* ── User leaves the document ───────────────────────────────────────────── */
   socket.on("document:leave", ({ docId }) => {
     leaveDocRoom(socket, docId);
   });
 
+  /* ── Disconnect — clean up all rooms ────────────────────────────────────── */
   socket.on("disconnect", () => {
     console.log("❌ Disconnected:", socket.id);
     leaveAllDocRooms(socket);
@@ -148,14 +157,19 @@ function getRoomUsers(docId) {
 
 function leaveDocRoom(socket, docId) {
   if (!docId || !docRooms[docId]?.[socket.id]) return;
+
   const user = docRooms[docId][socket.id];
   delete docRooms[docId][socket.id];
   if (Object.keys(docRooms[docId]).length === 0) delete docRooms[docId];
+
   socket.leave(`doc:${docId}`);
+
+  // Tell remaining users
   socket.to(`doc:${docId}`).emit("document:presence", {
     docId,
     users: getRoomUsers(docId),
   });
+
   console.log(`👋 ${user?.name} left doc:${docId}`);
 }
 
@@ -171,6 +185,15 @@ function leaveAllDocRooms(socket) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
+/* ─── MIDDLEWARE ─────────────────────────────────────────────────────────────── */
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));   // handle ALL preflight requests
+app.use(cookieParser());
+
+// NOTE: multer handles multipart/form-data for bulk routes — express.json is for everything else
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
 /* ─── STATIC FILES ───────────────────────────────────────────────────────────── */
 app.use("/uploads/images",    express.static(path.join(__dirname, "uploads/images")));
 app.use("/uploads/videos",    express.static(path.join(__dirname, "uploads/videos")));
@@ -181,7 +204,7 @@ app.use("/api/auth",        authRoutes);
 app.use("/api/staff",       staffRoutes);
 app.use("/api/role",        roleRoutes);
 app.use("/api/permissions", permissionRoutes);
-app.use("/api/tasks",       taskRoutes);
+app.use("/api/tasks",       taskRoutes);       // tasks + issues (same collection, category field)
 app.use("/api/task-status", taskStatusRoutes);
 app.use("/api/projects",    projectRoutes);
 app.use("/api/documents",   documentRoutes);
@@ -206,5 +229,6 @@ createRolesIfNotExist();
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 
-httpServer.timeout          = 180000;
-httpServer.keepAliveTimeout = 180000;
+// Increased timeout for bulk uploads (10 lakh rows ~10-15s on Atlas)
+httpServer.timeout          = 180000; // 3 minutes
+httpServer.keepAliveTimeout = 180000; 

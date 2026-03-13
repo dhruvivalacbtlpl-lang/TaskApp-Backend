@@ -1,4 +1,3 @@
-// models/Task.js
 import mongoose from "mongoose";
 
 const taskSchema = new mongoose.Schema(
@@ -26,13 +25,17 @@ const taskSchema = new mongoose.Schema(
       },
     ],
 
-    // ── Issue-only fields — no enum validation so null is always accepted ─────
+    // ── Issue-only fields ─────────────────────────────────────────────────────
     priority:  { type: String, default: null },
     issueType: { type: String, default: null },
     severity:  { type: String, default: null },
 
-    dueDate:     { type: Date,   default: null },
-    createdDate: { type: Date,   default: Date.now },
+    dueDate:     { type: Date, default: null },
+    createdDate: { type: Date, default: Date.now },
+
+    // ── NEW: Company working-hours deadline ───────────────────────────────────
+    requiredHours:      { type: Number, default: null }, // hours user inputs
+    calculatedDeadline: { type: Date,   default: null }, // auto-calculated
   },
   { timestamps: true }
 );
