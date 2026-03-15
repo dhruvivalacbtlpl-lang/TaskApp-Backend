@@ -2,39 +2,28 @@ import mongoose from "mongoose";
 
 const staffSchema = new mongoose.Schema(
   {
-    name: {
-      type: String,
-      required: true,
-    },
+    name: { type: String, required: true },
     email: {
       type: String,
       required: true,
-      unique: true,
+      trim: true,
+      lowercase: true,
+
     },
-    mobile: {
-      type: String,
-    },
-    password: {
-      type: String,
-      required: true,
-    },
-    role: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "Role",
-    },
-    // ── NEW: Company association ─────────────────────────────────────────────
+    mobile: { type: String },
+    password: { type: String, required: true },
+    role: { type: mongoose.Schema.Types.ObjectId, ref: "Role" },
     company: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Company",
-      default: null,
+      required: true,
     },
-    // true = this staff member is the company owner (only 1 per company)
-    isOwner: {
-      type: Boolean,
-      default: false,
-    },
+    isOwner: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
-export default mongoose.model("Staff", staffSchema);
+// This ensures email is unique ONLY within the same company
+staffSchema.index({ email: 1, company: 1 }, { unique: true });
+
+export default mongoose.models.Staff || mongoose.model("Staff", staffSchema);

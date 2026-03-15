@@ -2,40 +2,56 @@ import mongoose from "mongoose";
 
 const taskSchema = new mongoose.Schema(
   {
-    category: {
-      type:    String,
-      enum:    ["task", "issue"],
+    // Keeping both for backward compatibility as requested
+    type: {
+      type: String,
+      enum: ["task", "issue"],
       default: "task",
-      index:   true,
+      index: true,
+    },
+    category: {
+      type: String,
+      enum: ["task", "issue"],
+      default: "task",
+      index: true,
     },
 
-    name:        { type: String, required: true, trim: true },
+    name: { type: String, required: true, trim: true },
     description: { type: String, default: "" },
 
+    // CRITICAL: Multi-company isolation field
+    company: { 
+      type: mongoose.Schema.Types.ObjectId, 
+      ref: "Company", 
+      required: true,
+      index: true 
+    },
+
     taskStatus: { type: mongoose.Schema.Types.ObjectId, ref: "TaskStatus", default: null },
-    assignee:   { type: mongoose.Schema.Types.ObjectId, ref: "Staff",      default: null },
-    project:    { type: mongoose.Schema.Types.ObjectId, ref: "Project",    default: null },
+    assignee: { type: mongoose.Schema.Types.ObjectId, ref: "Staff", default: null },
+    project: { type: mongoose.Schema.Types.ObjectId, ref: "Project", default: null },
 
     media: [
       {
-        url:          { type: String },
+        url: { type: String },
         originalName: { type: String },
-        mimetype:     { type: String },
-        size:         { type: Number },
+        mimetype: { type: String },
+        size: { type: Number },
+        path: { type: String },
       },
     ],
 
-    // ── Issue-only fields ─────────────────────────────────────────────────────
-    priority:  { type: String, default: null },
+    // Issue-only fields
+    priority: { type: String, default: null },
     issueType: { type: String, default: null },
-    severity:  { type: String, default: null },
+    severity: { type: String, default: null },
 
-    dueDate:     { type: Date, default: null },
+    // Dates
+    dueDate: { type: Date, default: null }, // This will store the Smart Deadline
     createdDate: { type: Date, default: Date.now },
 
-    // ── NEW: Company working-hours deadline ───────────────────────────────────
-    requiredHours:      { type: Number, default: null }, // hours user inputs
-    calculatedDeadline: { type: Date,   default: null }, // auto-calculated
+    // Tracking for the calculation logic
+    estimatedHours: { type: Number, default: 0 }, 
   },
   { timestamps: true }
 );
