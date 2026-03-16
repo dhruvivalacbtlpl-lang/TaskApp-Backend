@@ -16,6 +16,7 @@ import taskRoutes       from "./src/routes/taskRoutes.js";
 import taskStatusRoutes from "./src/routes/taskStatusRoutes.js";
 import projectRoutes    from "./src/routes/projectRoutes.js";
 import documentRoutes   from "./src/routes/documentRoutes.js";
+import companyRoutes    from "./src/routes/companyRoutes.js";
 
 // Register Company model so Mongoose knows about it
 import "./src/models/Company.js";
@@ -35,7 +36,7 @@ app.set("trust proxy", 1);
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:3000",
-  process.env.FRONTEND_URL, // https://w2ml73xv-5173.inc1.devtunnels.ms
+  process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 /* ─── CORS ───────────────────────────────────────────────────────────────────── */
@@ -50,7 +51,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept", "Origin", "Cache-Control"],
   exposedHeaders: ["Content-Range", "X-Content-Range"],
   maxAge: 86400,
 };
@@ -148,6 +149,24 @@ app.use("/uploads/images",    express.static(path.join(__dirname, "uploads/image
 app.use("/uploads/videos",    express.static(path.join(__dirname, "uploads/videos")));
 app.use("/uploads/documents", express.static(path.join(__dirname, "uploads/documents")));
 
+/* ─── ONE-TIME MIGRATION: assign company to all staff without one ────────────── */
+/* DELETE THIS ROUTE after running it once at http://localhost:5000/api/fix-staff */
+app.get("/api/fix-staff", async (req, res) => {
+  try {
+    const Staff   = (await import("./src/models/Staff.js")).default;
+    const Company = (await import("./src/models/Company.js")).default;
+    const company = await Company.findOne();
+    if (!company) return res.json({ error: "No company found in database" });
+    const result = await Staff.updateMany(
+      { company: { $in: [null, undefined] } },
+      { $set: { company: company._id } }
+    );
+    res.json({ success: true, fixed: result.modifiedCount, company: company.name });
+  } catch(err) {
+    res.json({ error: err.message });
+  }
+});
+
 /* ─── ROUTES ─────────────────────────────────────────────────────────────────── */
 app.use("/api/auth",        authRoutes);
 app.use("/api/staff",       staffRoutes);
@@ -157,6 +176,7 @@ app.use("/api/tasks",       taskRoutes);
 app.use("/api/task-status", taskStatusRoutes);
 app.use("/api/projects",    projectRoutes);
 app.use("/api/documents",   documentRoutes);
+app.use("/api/company",     companyRoutes);   // ← ADDED
 
 /* ─── GLOBAL ERROR HANDLER ───────────────────────────────────────────────────── */
 app.use((err, req, res, next) => {

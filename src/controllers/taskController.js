@@ -33,11 +33,20 @@ const toObjectId = (val) => {
   }
 };
 
+// ── Helper: calculate deadline from company working hours ─────────────────────
+const calcDeadline = async (companyId, hours) => {
+  if (!companyId || !hours || Number(hours) <= 0) return null;
+  try {
+    const company = await Company.findById(companyId).select("workingHours holidays");
+    if (!company) return null;
+    return calculateTaskDeadline(new Date(), Number(hours), company);
+  } catch { return null; }
+};
+
 // ── TASKS CRUD ────────────────────────────────────────────────────────────────
 
 export const getTasks = async (req, res) => {
   try {
-    // 🔥 FILTER BY COMPANY
     const tasks = await Task.find({
       company: req.user.companyId,
       $or: [{ type: "task" }, { type: { $exists: false } }, { type: null }],
@@ -48,7 +57,6 @@ export const getTasks = async (req, res) => {
 
 export const getTaskById = async (req, res) => {
   try {
-    // 🔥 FILTER BY COMPANY
     const task = await Task.findOne({ _id: req.params.id, company: req.user.companyId }).populate(populate);
     if (!task) return res.status(404).json({ error: "Not found" });
     res.json(task);
@@ -57,25 +65,29 @@ export const getTaskById = async (req, res) => {
 
 export const createTask = async (req, res) => {
   try {
-    const { name, description, taskStatus, assignee, project, estimatedHours } = req.body;
+    const { name, description, taskStatus, assignee, project, requiredHours, estimatedHours } = req.body;
     if (!name || !description || !assignee)
       return res.status(400).json({ error: "name, description, and assignee are required" });
 
-    // 🕒 GET COMPANY FOR DEADLINE CALCULATION
-    const company = await Company.findById(req.user.companyId);
-    
-    // 🕒 CALCULATE AUTOMATIC DEADLINE
-    const deadline = estimatedHours ? calculateTaskDeadline(new Date(), estimatedHours, company) : null;
+    // Support both requiredHours (new) and estimatedHours (old)
+    const hours = requiredHours || estimatedHours || 0;
+
+    // Calculate deadline from company working hours
+    const deadline = hours > 0 ? await calcDeadline(req.user.companyId, hours) : null;
 
     const task = await Task.create({
-      type: "task", name, description,
-      taskStatus: toObjectId(taskStatus),
-      assignee:   toObjectId(assignee),
-      project:    toObjectId(project),
-      company:    req.user.companyId, // 🔥 SET COMPANY ID
-      dueDate:    deadline,           // 🔥 SET SMART DEADLINE
-      estimatedHours: estimatedHours || 0,
-      media: mediaPaths(req.files),
+      type:           "task",
+      name,
+      description,
+      taskStatus:     toObjectId(taskStatus),
+      assignee:       toObjectId(assignee),
+      project:        toObjectId(project),
+      company:        req.user.companyId,
+      dueDate:        deadline,
+      calculatedDeadline: deadline,
+      requiredHours:  hours || null,
+      estimatedHours: hours || 0,
+      media:          mediaPaths(req.files),
     });
 
     const populated = await Task.findById(task._id).populate(populate);
@@ -93,10 +105,21 @@ export const updateTask = async (req, res) => {
     delete data.priority; delete data.issueType; delete data.severity;
     if (req.files?.length) data.media = mediaPaths(req.files);
 
-    // 🔥 FILTER BY COMPANY
+    // ── Calculate deadline if requiredHours provided ──────────────────────────
+    const hours = data.requiredHours || data.estimatedHours;
+    if (hours && Number(hours) > 0) {
+      const deadline = await calcDeadline(req.user.companyId, hours);
+      if (deadline) {
+        data.dueDate            = deadline;
+        data.calculatedDeadline = deadline;
+      }
+      data.requiredHours  = Number(hours);
+      data.estimatedHours = Number(hours);
+    }
+
     const task = await Task.findOneAndUpdate(
-      { _id: req.params.id, company: req.user.companyId }, 
-      data, 
+      { _id: req.params.id, company: req.user.companyId },
+      data,
       { new: true, runValidators: false }
     ).populate(populate);
 
@@ -108,7 +131,6 @@ export const updateTask = async (req, res) => {
 
 export const deleteTask = async (req, res) => {
   try {
-    // 🔥 FILTER BY COMPANY
     await Task.findOneAndDelete({ _id: req.params.id, company: req.user.companyId });
     await emit("task:deleted", { _id: req.params.id });
     res.json({ message: "Deleted" });
@@ -117,7 +139,6 @@ export const deleteTask = async (req, res) => {
 
 export const deleteAllTasks = async (req, res) => {
   try {
-    // 🔥 FILTER BY COMPANY
     const result = await Task.deleteMany({
       company: req.user.companyId,
       $or: [{ type: "task" }, { type: { $exists: false } }, { type: null }],
@@ -128,7 +149,6 @@ export const deleteAllTasks = async (req, res) => {
 };
 
 // ── BULK CREATE TASKS ─────────────────────────────────────────────────────────
-
 export const bulkCreateTasks = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Excel file required" });
@@ -146,16 +166,15 @@ export const bulkCreateTasks = async (req, res) => {
         description:  n.description || n.desc || "",
         assigneeName: n.assignee || n["assigned to"] || n.staff || "",
         statusName:   n.status || n["task status"] || "",
-        hours:        Number(n.hours || n["estimated hours"] || 0)
+        hours:        Number(n.hours || n["estimated hours"] || n["required hours"] || 0),
       };
     }).filter(r => r.name && r.assigneeName);
 
-    // 🔥 FILTER STAFF/STATUS/EXISTING BY COMPANY
     const [allStaff, allStatuses, existing, company] = await Promise.all([
       Staff.find({ company: req.user.companyId }, { name: 1 }).lean(),
-      TaskStatus.find({ company: req.user.companyId }, { name: 1 }).lean(),
+      TaskStatus.find({}, { name: 1 }).lean(),
       Task.find({ company: req.user.companyId, name: { $in: rows.map(r => r.name) } }, { name: 1 }).lean(),
-      Company.findById(req.user.companyId)
+      Company.findById(req.user.companyId).select("workingHours holidays"),
     ]);
 
     const staffMap    = new Map(allStaff.map(s => [s.name.toLowerCase(), s._id]));
@@ -168,17 +187,17 @@ export const bulkCreateTasks = async (req, res) => {
       if (existingSet.has(r.name.toLowerCase())) continue;
       const assigneeId = staffMap.get(r.assigneeName.toLowerCase());
       if (!assigneeId) continue;
-
-      // 🕒 BULK CALCULATE DEADLINE
-      const deadline = r.hours > 0 ? calculateTaskDeadline(new Date(), r.hours, company) : null;
-
+      const deadline = r.hours > 0 && company ? calculateTaskDeadline(new Date(), r.hours, company) : null;
       valid.push({
         type: "task", name: r.name, description: r.description,
-        taskStatus: r.statusName ? statusMap.get(r.statusName.toLowerCase()) || null : null,
-        assignee: assigneeId,
-        project:  projectId,
-        company:  req.user.companyId, // 🔥 SET COMPANY ID
-        dueDate:  deadline,
+        taskStatus:     r.statusName ? statusMap.get(r.statusName.toLowerCase()) || null : null,
+        assignee:       assigneeId,
+        project:        projectId,
+        company:        req.user.companyId,
+        dueDate:        deadline,
+        calculatedDeadline: deadline,
+        requiredHours:  r.hours || null,
+        estimatedHours: r.hours || 0,
         media: [],
       });
     }
@@ -194,11 +213,10 @@ export const bulkCreateTasks = async (req, res) => {
 };
 
 // ── ISSUES CRUD ───────────────────────────────────────────────────────────────
-
 export const getIssues = async (req, res) => {
   try {
-    // 🔥 FILTER BY COMPANY
-    const issues = await Task.find({ type: "issue", company: req.user.companyId }).populate(populate).sort({ createdAt: -1 });
+    const issues = await Task.find({ type: "issue", company: req.user.companyId })
+      .populate(populate).sort({ createdAt: -1 });
     res.json(issues);
   } catch { res.status(500).json({ error: "Failed to fetch issues" }); }
 };
@@ -208,13 +226,13 @@ export const createIssue = async (req, res) => {
     const { name, description, taskStatus, assignee, project, priority, issueType, severity, dueDate } = req.body;
     if (!name || !description || !assignee)
       return res.status(400).json({ error: "name, description, and assignee are required" });
-    
+
     const issue = await Task.create({
       type: "issue", name, description,
       taskStatus: toObjectId(taskStatus),
       assignee:   toObjectId(assignee),
       project:    toObjectId(project),
-      company:    req.user.companyId, // 🔥 SET COMPANY ID
+      company:    req.user.companyId,
       media:      mediaPaths(req.files),
       ...(priority  && { priority }),
       ...(issueType && { issueType }),
@@ -233,10 +251,10 @@ export const updateIssue = async (req, res) => {
     data.project    = toObjectId(data.project);
     data.assignee   = toObjectId(data.assignee);
     data.taskStatus = toObjectId(data.taskStatus);
-    
+
     const issue = await Task.findOneAndUpdate(
-      { _id: req.params.id, company: req.user.companyId }, 
-      data, 
+      { _id: req.params.id, company: req.user.companyId },
+      data,
       { new: true, runValidators: false }
     ).populate(populate);
 
@@ -254,19 +272,16 @@ export const deleteAllIssues = async (req, res) => {
   } catch { res.status(500).json({ error: "Failed to delete all issues" }); }
 };
 
-// ── BULK CREATE ISSUES ────────────────────────────────────────────────────────
-
 export const bulkCreateIssues = async (req, res) => {
   try {
     const rows = req.body.issues;
     if (!Array.isArray(rows) || rows.length === 0)
       return res.status(400).json({ error: "No rows provided." });
 
-    const [allStaff, allStatuses, existing, company] = await Promise.all([
+    const [allStaff, allStatuses, existing] = await Promise.all([
       Staff.find({ company: req.user.companyId }, { name: 1 }).lean(),
-      TaskStatus.find({ company: req.user.companyId }, { name: 1 }).lean(),
+      TaskStatus.find({}, { name: 1 }).lean(),
       Task.find({ company: req.user.companyId, name: { $in: rows.map(r => r.name) }, type: "issue" }, { name: 1 }).lean(),
-      Company.findById(req.user.companyId)
     ]);
 
     const staffMap    = new Map(allStaff.map(s => [s.name.toLowerCase(), s._id]));
@@ -275,18 +290,18 @@ export const bulkCreateIssues = async (req, res) => {
     const projectId   = toObjectId(req.body.project);
 
     const valid = [];
+    const unmatched = [];
     for (const r of rows) {
       if (!r.name || !r.assigneeName || existingSet.has(r.name.toLowerCase())) continue;
       const assigneeId = staffMap.get(r.assigneeName.toLowerCase());
-      if (!assigneeId) continue;
-
+      if (!assigneeId) { unmatched.push(r.assigneeName); continue; }
       valid.push({
         type: "issue", name: r.name,
         description: r.description || "",
         taskStatus:  r.statusName ? statusMap.get(r.statusName.toLowerCase()) || null : null,
         assignee:    assigneeId,
         project:     projectId,
-        company:     req.user.companyId, // 🔥 SET COMPANY ID
+        company:     req.user.companyId,
         priority:    r.priority || "medium",
         severity:    r.severity || "minor",
         issueType:   "bug",
@@ -296,7 +311,12 @@ export const bulkCreateIssues = async (req, res) => {
 
     const inserted = await Task.insertMany(valid, { ordered: false });
     await emit("issues:bulkCreated", { count: inserted.length });
-    res.status(201).json({ created: inserted.length });
+    res.status(201).json({
+      created: inserted.length,
+      failed: rows.length - inserted.length,
+      duplicates: 0,
+      unmatchedAssignees: [...new Set(unmatched)].slice(0, 10),
+    });
   } catch (err) {
     res.status(500).json({ error: "Bulk upload failed", details: err.message });
   }
