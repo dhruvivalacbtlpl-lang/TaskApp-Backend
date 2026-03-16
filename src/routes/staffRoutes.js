@@ -1,22 +1,20 @@
-import express    from "express";
-import bcrypt      from "bcryptjs";
-import Staff       from "../models/Staff.js";
-import Company     from "../models/Company.js";
+import express from "express";
+import bcrypt  from "bcryptjs";
+import Staff   from "../models/Staff.js";
+import Company from "../models/Company.js";
 import { protect } from "../middleware/auth.js";
 import { sendWelcomeStaffMail } from "../services/mail.js";
 
 const router = express.Router();
 
 /* ─── GET /api/staff ─────────────────────────────────────────────────────────
- * Returns staff filtered by the logged-in user's company.
- * If user has no company, returns all staff (backward compatible).
+ * SuperAdmin  → returns ALL staff across ALL companies
+ * Normal user → returns staff in their company only
  */
 router.get("/", protect, async (req, res) => {
   try {
-    const filter = {};
-    if (req.user?.company) {
-      filter.company = req.user.company;
-    }
+    // SuperAdmin sees everything — no company filter
+    const filter = req.user.isSuperAdmin ? {} : { company: req.user.company };
 
     const staffList = await Staff.find(filter)
       .select("-password")
@@ -30,7 +28,7 @@ router.get("/", protect, async (req, res) => {
   }
 });
 
-/* ─── GET /api/staff/:id ─────────────────────────────────────────────────────── */
+/* ─── GET /api/staff/:id ──────────────────────────────────────────────────── */
 router.get("/:id", protect, async (req, res) => {
   try {
     const staff = await Staff.findById(req.params.id)
@@ -47,50 +45,45 @@ router.get("/:id", protect, async (req, res) => {
 });
 
 /* ─── POST /api/staff ────────────────────────────────────────────────────────
- * Create staff. Password typed manually (not auto-generated).
- * Inherits company from logged-in user. Sends welcome email.
+ * SuperAdmin can create staff for any company (pass companyId in body).
+ * Normal user inherits their own company.
  */
 router.post("/", protect, async (req, res) => {
   try {
-    const { name, email, mobile, password, role } = req.body;
+    const { name, email, mobile, password, role, companyId: bodyCompanyId } = req.body;
 
     if (!name?.trim())       return res.status(400).json({ message: "Name is required" });
     if (!email?.trim())      return res.status(400).json({ message: "Email is required" });
     if (!password)           return res.status(400).json({ message: "Password is required" });
     if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
 
-    const existing = await Staff.findOne({ email: email.toLowerCase().trim() });
-    if (existing) return res.status(400).json({ message: "Email already in use" });
+    // Determine which company this staff belongs to
+    const companyId = req.user.isSuperAdmin
+      ? bodyCompanyId || null
+      : req.user.company;
+
+    const existing = await Staff.findOne({ email: email.toLowerCase().trim(), company: companyId });
+    if (existing) return res.status(400).json({ message: "Email already in use in this company" });
 
     const hashedPassword = await bcrypt.hash(password, 12);
 
-    // Inherit company from the logged-in user (owner/admin)
-    const companyId = req.user?.company || null;
-
     const staff = await Staff.create({
-      name:     name.trim(),
-      email:    email.toLowerCase().trim(),
-      mobile:   mobile || "",
+      name:    name.trim(),
+      email:   email.toLowerCase().trim(),
+      mobile:  mobile || "",
       password: hashedPassword,
-      role:     role || null,
-      company:  companyId,
-      isOwner:  false,
+      role:    role || null,
+      company: companyId,
+      isOwner: false,
     });
 
-    // Get company name for the email
     let companyName = "TaskApp";
     if (companyId) {
       const company = await Company.findById(companyId).select("name");
       if (company) companyName = company.name;
     }
 
-    // Send welcome email with credentials
-    await sendWelcomeStaffMail({
-      name:        name.trim(),
-      email:       email.toLowerCase().trim(),
-      password,    // plain text — for the email only
-      companyName,
-    });
+    await sendWelcomeStaffMail({ name: name.trim(), email: email.toLowerCase().trim(), password, companyName });
 
     const populated = await Staff.findById(staff._id)
       .select("-password")
@@ -112,10 +105,15 @@ router.put("/:id", protect, async (req, res) => {
     const staff = await Staff.findById(req.params.id);
     if (!staff) return res.status(404).json({ message: "Staff not found" });
 
-    if (name)                staff.name   = name.trim();
-    if (email)               staff.email  = email.toLowerCase().trim();
+    // Non-superadmin can only edit staff in their own company
+    if (!req.user.isSuperAdmin && String(staff.company) !== String(req.user.company)) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    if (name)                 staff.name   = name.trim();
+    if (email)                staff.email  = email.toLowerCase().trim();
     if (mobile !== undefined) staff.mobile = mobile;
-    if (role)                staff.role   = role;
+    if (role)                 staff.role   = role;
 
     if (password) {
       if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
@@ -144,6 +142,11 @@ router.delete("/:id", protect, async (req, res) => {
 
     if (staff.isOwner) {
       return res.status(403).json({ message: "Cannot delete the company owner" });
+    }
+
+    // Non-superadmin can only delete staff in their own company
+    if (!req.user.isSuperAdmin && String(staff.company) !== String(req.user.company)) {
+      return res.status(403).json({ message: "Not authorized" });
     }
 
     await staff.deleteOne();

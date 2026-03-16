@@ -9,36 +9,55 @@ export const protect = async (req, res, next) => {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Support ALL possible field names the JWT might have been signed with:
-    // decoded.companyId  (new style)
-    // decoded.company    (old style — plain ObjectId)
-    // decoded.company._id (old style — populated object)
-    const companyId =
-      decoded.companyId ||
-      (typeof decoded.company === "object" ? decoded.company?._id : decoded.company) ||
-      null;
+    // ── ALWAYS fetch fresh data from DB so isSuperAdmin is never stale ────────
+    const staffDoc = await Staff.findById(decoded.id)
+      .select("isSuperAdmin isOwner role company")
+      .lean();
 
-    // Also fetch fresh user from DB so we always have latest company value
-    // (handles the case where admin was created before company was assigned)
-    let freshCompanyId = companyId;
-    if (!freshCompanyId) {
-      try {
-        const staffDoc = await Staff.findById(decoded.id).select("company").lean();
-        freshCompanyId = staffDoc?.company || null;
-      } catch { /* ignore */ }
+    if (!staffDoc) {
+      return res.status(401).json({ message: "User no longer exists" });
     }
 
+    // ── SuperAdmin: no company needed ─────────────────────────────────────────
+    if (staffDoc.isSuperAdmin) {
+      req.user = {
+        id:           decoded.id,
+        _id:          decoded.id,
+        isSuperAdmin: true,
+        isOwner:      false,
+        role:         null,
+        companyId:    null,
+        company:      null,
+      };
+      return next();
+    }
+
+    // ── Normal user ───────────────────────────────────────────────────────────
+    const companyId = staffDoc.company?.toString() || null;
+
     req.user = {
-      id:        decoded.id,
-      _id:       decoded.id,
-      isOwner:   decoded.isOwner   || false,
-      role:      decoded.role      || null,
-      companyId: freshCompanyId,
-      company:   freshCompanyId,   // same value — staffRoutes uses .company
+      id:           decoded.id,
+      _id:          decoded.id,
+      isSuperAdmin: false,
+      isOwner:      staffDoc.isOwner || false,
+      role:         staffDoc.role    || null,
+      companyId:    companyId,
+      company:      companyId,
     };
 
     next();
   } catch (err) {
     res.status(401).json({ message: "Token is not valid" });
   }
+};
+
+/**
+ * Blocks non-superadmins from a route entirely.
+ * Usage: router.get("/all", protect, superAdminOnly, handler)
+ */
+export const superAdminOnly = (req, res, next) => {
+  if (!req.user?.isSuperAdmin) {
+    return res.status(403).json({ message: "SuperAdmin access required" });
+  }
+  next();
 };

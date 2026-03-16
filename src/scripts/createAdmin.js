@@ -1,25 +1,17 @@
 import bcrypt from "bcryptjs";
 import Staff from "../models/Staff.js";
-import Role from "../models/Role.js";
 
+/**
+ * Creates the SuperAdmin account.
+ * SuperAdmin has NO company — they exist above all companies.
+ * Login is done WITHOUT a companyName field (handled separately in authController).
+ */
 const createAdmin = async () => {
   try {
-    let adminRole = await Role.findOne({ name: "ADMIN" });
-
-    if (!adminRole) {
-      adminRole = await Role.create({
-        name: "ADMIN",
-        permissions: ["ALL_ACCESS"],
-      });
-      console.log("✅ ADMIN role created");
-    }
-
-    const adminExists = await Staff.findOne({
-      email: "admin@taskapp.com",
-    });
+    const adminExists = await Staff.findOne({ email: "admin@taskapp.com" });
 
     if (adminExists) {
-      console.log("✅ Admin already exists");
+      console.log("✅ SuperAdmin already exists");
       return;
     }
 
@@ -30,11 +22,13 @@ const createAdmin = async () => {
       email: "admin@taskapp.com",
       mobile: "9999999999",
       password: hashedPassword,
-      role: adminRole._id,
-      status: 1,
+      role: null,           // SuperAdmin needs no role
+      company: undefined,   // SuperAdmin belongs to no company
+      isOwner: false,
+      isSuperAdmin: true,   // ← Key flag
     });
 
-    console.log("🚀 Admin created successfully");
+    console.log("🚀 SuperAdmin created successfully → admin@taskapp.com / Admin@123");
   } catch (error) {
     console.error("❌ Error creating admin:", error.message);
   }
