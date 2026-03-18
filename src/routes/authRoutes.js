@@ -6,6 +6,7 @@ import Role       from "../models/Role.js";
 import Company    from "../models/Company.js";
 import { protect } from "../middleware/auth.js";
 import { sendCompanyCreatedMail } from "../services/mail.js";
+import { logAudit } from "../utils/logAudit.js"; // ← NEW
 
 const router = express.Router();
 
@@ -29,9 +30,7 @@ router.post("/signup", async (req, res) => {
     });
     if (existingCompany) return res.status(400).json({ message: "A company with this name already exists" });
 
-    // Allow same email across different companies — only block exact email+company combo
     const existingStaff = await Staff.findOne({ email: ownerEmail.toLowerCase().trim() });
-    // We don't block same email across companies — just warn in logs
     if (existingStaff) {
       console.log(`ℹ️ Email ${ownerEmail} already used in another company — allowing for new company`);
     }
@@ -85,10 +84,7 @@ router.post("/signup", async (req, res) => {
   }
 });
 
-/* ─── GET /api/auth/companies?email=xxx ─────────────────────────────────────────
- * Returns all companies that the given email belongs to.
- * Called from login page when user finishes typing their email.
- */
+/* ─── GET /api/auth/companies?email=xxx ──────────────────────────────────────── */
 router.get("/companies", async (req, res) => {
   try {
     const { email } = req.query;
@@ -120,14 +116,11 @@ router.post("/login", async (req, res) => {
     const { email, password, companyId, companyName } = req.body;
     if (!email || !password) return res.status(400).json({ message: "Email and password are required" });
 
-    // Build query to find the correct staff in the correct company
     const query = { email: email.toLowerCase().trim() };
 
     if (companyId) {
-      // Best case: companyId sent directly
       query.company = companyId;
     } else if (companyName?.trim()) {
-      // Fallback: find company by name first, then filter staff
       const company = await Company.findOne({
         name: { $regex: new RegExp(`^${companyName.trim()}$`, "i") },
       }).select("_id");
@@ -145,7 +138,6 @@ router.post("/login", async (req, res) => {
 
     let resolvedCompanyId = staff.company?._id || staff.company || null;
 
-    // Fallback: assign first company if none linked
     if (!resolvedCompanyId) {
       const firstCompany = await Company.findOne().sort({ createdAt: 1 }).select("_id");
       if (firstCompany) {
@@ -179,6 +171,23 @@ router.post("/login", async (req, res) => {
       .select("-password")
       .populate("role")
       .populate("company", "name status logo");
+
+    // ── Audit log LOGIN ────────────────────────────────────────────────────────
+    req.user = {
+      _id:       staff._id,
+      id:        staff._id,
+      name:      staff.name,
+      companyId: resolvedCompanyId?.toString() || null,
+      isOwner:   staff.isOwner,
+      role:      staff.role,
+    };
+    await logAudit(
+      req,
+      "Auth",
+      "LOGIN",
+      `"${staff.name}" logged in to ${staff.company?.name || "Unknown Company"}`,
+      { entityId: staff._id.toString(), entityName: staff.name }
+    ).catch(err => console.warn("⚠️ Login audit failed:", err.message));
 
     return res.json({
       message: "Login successful",
@@ -216,7 +225,20 @@ router.get("/profile", protect, async (req, res) => {
 });
 
 /* ─── POST /api/auth/logout ──────────────────────────────────────────────────── */
-router.post("/logout", (req, res) => {
+router.post("/logout", protect, async (req, res) => {
+  try {
+    // ── Audit log LOGOUT ──────────────────────────────────────────────────────
+    await logAudit(
+      req,
+      "Auth",
+      "LOGOUT",
+      `"${req.user?.name || "User"}" logged out`,
+      { entityName: req.user?.name }
+    ).catch(err => console.warn("⚠️ Logout audit failed:", err.message));
+  } catch (err) {
+    console.warn("Logout audit error:", err.message);
+  }
+
   res.clearCookie("token", { httpOnly: true, sameSite: "None", secure: true });
   return res.json({ message: "Logged out successfully" });
 });

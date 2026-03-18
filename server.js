@@ -8,28 +8,35 @@ import { fileURLToPath } from "url";
 import { createServer } from "http";
 import { Server } from "socket.io";
 
-import staffRoutes      from "./src/routes/staffRoutes.js";
-import authRoutes       from "./src/routes/authRoutes.js";
-import roleRoutes       from "./src/routes/roleRoutes.js";
-import permissionRoutes from "./src/routes/permissions.js";
-import taskRoutes       from "./src/routes/taskRoutes.js";
-import taskStatusRoutes from "./src/routes/taskStatusRoutes.js";
-import projectRoutes    from "./src/routes/projectRoutes.js";
-import documentRoutes   from "./src/routes/documentRoutes.js";
-import companyRoutes    from "./src/routes/companyRoutes.js";
+import staffRoutes        from "./src/routes/staffRoutes.js";
+import authRoutes         from "./src/routes/authRoutes.js";
+import roleRoutes         from "./src/routes/roleRoutes.js";
+import permissionRoutes   from "./src/routes/permissions.js";
+import taskRoutes         from "./src/routes/taskRoutes.js";
+import taskStatusRoutes   from "./src/routes/taskStatusRoutes.js";
+import projectRoutes      from "./src/routes/projectRoutes.js";
+import documentRoutes     from "./src/routes/documentRoutes.js";
+import companyRoutes      from "./src/routes/companyRoutes.js";
+import subscriptionRoutes from "./src/routes/subscriptionRoutes.js"; // ← NEW
+import auditRoutes        from "./src/routes/auditRoutes.js";        // ← NEW
 
-// Register Company model so Mongoose knows about it
+// Register models so Mongoose knows about them
 import "./src/models/Company.js";
+import "./src/models/Plan.js";         // ← NEW
+import "./src/models/Subscription.js"; // ← NEW
+import "./src/models/UsageLog.js";     // ← NEW
+import "./src/models/AuditLog.js";     // ← NEW
 
 import createAdmin               from "./src/scripts/createAdmin.js";
 import { createRolesIfNotExist } from "./src/utils/createRoles.js";
+import { seedPlans }             from "./src/scripts/seedPlans.js"; // ← NEW
 
 dotenv.config();
 
 const app        = express();
 const httpServer = createServer(app);
 
-/* ─── TRUST PROXY (required for dev tunnels / reverse proxies) ──────────────── */
+/* ─── TRUST PROXY ────────────────────────────────────────────────────────────── */
 app.set("trust proxy", 1);
 
 /* ─── ALLOWED ORIGINS ───────────────────────────────────────────────────────── */
@@ -56,14 +63,14 @@ const corsOptions = {
   maxAge: 86400,
 };
 
-/* ─── MIDDLEWARE (order matters — cors & preflight FIRST) ────────────────────── */
+/* ─── MIDDLEWARE ─────────────────────────────────────────────────────────────── */
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-/* ─── CACHE HEADERS (speeds up repeated GET requests via tunnel) ─────────────── */
+/* ─── CACHE HEADERS ──────────────────────────────────────────────────────────── */
 app.use((req, res, next) => {
   if (req.method === "GET") {
     res.set("Cache-Control", "private, max-age=30");
@@ -149,8 +156,7 @@ app.use("/uploads/images",    express.static(path.join(__dirname, "uploads/image
 app.use("/uploads/videos",    express.static(path.join(__dirname, "uploads/videos")));
 app.use("/uploads/documents", express.static(path.join(__dirname, "uploads/documents")));
 
-/* ─── ONE-TIME MIGRATION: assign company to all staff without one ────────────── */
-/* DELETE THIS ROUTE after running it once at http://localhost:5000/api/fix-staff */
+/* ─── ONE-TIME MIGRATION ─────────────────────────────────────────────────────── */
 app.get("/api/fix-staff", async (req, res) => {
   try {
     const Staff   = (await import("./src/models/Staff.js")).default;
@@ -168,15 +174,17 @@ app.get("/api/fix-staff", async (req, res) => {
 });
 
 /* ─── ROUTES ─────────────────────────────────────────────────────────────────── */
-app.use("/api/auth",        authRoutes);
-app.use("/api/staff",       staffRoutes);
-app.use("/api/role",        roleRoutes);
-app.use("/api/permissions", permissionRoutes);
-app.use("/api/tasks",       taskRoutes);
-app.use("/api/task-status", taskStatusRoutes);
-app.use("/api/projects",    projectRoutes);
-app.use("/api/documents",   documentRoutes);
-app.use("/api/company",     companyRoutes);   // ← ADDED
+app.use("/api/auth",         authRoutes);
+app.use("/api/staff",        staffRoutes);
+app.use("/api/role",         roleRoutes);
+app.use("/api/permissions",  permissionRoutes);
+app.use("/api/tasks",        taskRoutes);
+app.use("/api/task-status",  taskStatusRoutes);
+app.use("/api/projects",     projectRoutes);
+app.use("/api/documents",    documentRoutes);
+app.use("/api/company",      companyRoutes);
+app.use("/api/subscription", subscriptionRoutes); // ← NEW
+app.use("/api/audit",        auditRoutes);        // ← NEW
 
 /* ─── GLOBAL ERROR HANDLER ───────────────────────────────────────────────────── */
 app.use((err, req, res, next) => {
@@ -193,6 +201,7 @@ mongoose
 /* ─── INIT ───────────────────────────────────────────────────────────────────── */
 createAdmin();
 createRolesIfNotExist();
+seedPlans(); // ← NEW — seeds Free, Basic, Pro plans (safe, uses upsert)
 
 /* ─── START ──────────────────────────────────────────────────────────────────── */
 const PORT = process.env.PORT || 5000;

@@ -4,23 +4,18 @@ import Staff   from "../models/Staff.js";
 import Company from "../models/Company.js";
 import { protect } from "../middleware/auth.js";
 import { sendWelcomeStaffMail } from "../services/mail.js";
+import { logAudit } from "../utils/logAudit.js";
 
 const router = express.Router();
 
-/* ─── GET /api/staff ─────────────────────────────────────────────────────────
- * SuperAdmin  → returns ALL staff across ALL companies
- * Normal user → returns staff in their company only
- */
+/* ─── GET /api/staff ─────────────────────────────────────────────────────────*/
 router.get("/", protect, async (req, res) => {
   try {
-    // SuperAdmin sees everything — no company filter
     const filter = req.user.isSuperAdmin ? {} : { company: req.user.company };
-
     const staffList = await Staff.find(filter)
       .select("-password")
       .populate("role",    "name permissions")
       .populate("company", "name");
-
     return res.json(staffList);
   } catch (err) {
     console.error("❌ Get staff error:", err);
@@ -35,7 +30,6 @@ router.get("/:id", protect, async (req, res) => {
       .select("-password")
       .populate("role",    "name permissions")
       .populate("company", "name");
-
     if (!staff) return res.status(404).json({ message: "Staff not found" });
     return res.json(staff);
   } catch (err) {
@@ -44,10 +38,7 @@ router.get("/:id", protect, async (req, res) => {
   }
 });
 
-/* ─── POST /api/staff ────────────────────────────────────────────────────────
- * SuperAdmin can create staff for any company (pass companyId in body).
- * Normal user inherits their own company.
- */
+/* ─── POST /api/staff ────────────────────────────────────────────────────────*/
 router.post("/", protect, async (req, res) => {
   try {
     const { name, email, mobile, password, role, companyId: bodyCompanyId } = req.body;
@@ -57,7 +48,6 @@ router.post("/", protect, async (req, res) => {
     if (!password)           return res.status(400).json({ message: "Password is required" });
     if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
 
-    // Determine which company this staff belongs to
     const companyId = req.user.isSuperAdmin
       ? bodyCompanyId || null
       : req.user.company;
@@ -68,13 +58,13 @@ router.post("/", protect, async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 12);
 
     const staff = await Staff.create({
-      name:    name.trim(),
-      email:   email.toLowerCase().trim(),
-      mobile:  mobile || "",
+      name:     name.trim(),
+      email:    email.toLowerCase().trim(),
+      mobile:   mobile || "",
       password: hashedPassword,
-      role:    role || null,
-      company: companyId,
-      isOwner: false,
+      role:     role || null,
+      company:  companyId,
+      isOwner:  false,
     });
 
     let companyName = "TaskApp";
@@ -90,6 +80,12 @@ router.post("/", protect, async (req, res) => {
       .populate("role",    "name permissions")
       .populate("company", "name");
 
+    // ── Audit log ──────────────────────────────────────────────────────────
+    await logAudit(req, "Staff", "CREATE",
+      `Created staff member "${name.trim()}"`,
+      { entityId: staff._id.toString(), entityName: name.trim() }
+    );
+
     return res.status(201).json(populated);
   } catch (err) {
     console.error("❌ Create staff error:", err);
@@ -97,7 +93,7 @@ router.post("/", protect, async (req, res) => {
   }
 });
 
-/* ─── PUT /api/staff/:id ─────────────────────────────────────────────────────── */
+/* ─── PUT /api/staff/:id ─────────────────────────────────────────────────────*/
 router.put("/:id", protect, async (req, res) => {
   try {
     const { name, email, mobile, role, password } = req.body;
@@ -105,10 +101,11 @@ router.put("/:id", protect, async (req, res) => {
     const staff = await Staff.findById(req.params.id);
     if (!staff) return res.status(404).json({ message: "Staff not found" });
 
-    // Non-superadmin can only edit staff in their own company
     if (!req.user.isSuperAdmin && String(staff.company) !== String(req.user.company)) {
       return res.status(403).json({ message: "Not authorized" });
     }
+
+    const before = { name: staff.name, email: staff.email, role: staff.role };
 
     if (name)                 staff.name   = name.trim();
     if (email)                staff.email  = email.toLowerCase().trim();
@@ -127,6 +124,12 @@ router.put("/:id", protect, async (req, res) => {
       .populate("role",    "name permissions")
       .populate("company", "name");
 
+    // ── Audit log ──────────────────────────────────────────────────────────
+    await logAudit(req, "Staff", "UPDATE",
+      `Updated staff member "${staff.name}"`,
+      { entityId: staff._id.toString(), entityName: staff.name, before }
+    );
+
     return res.json(updated);
   } catch (err) {
     console.error("❌ Update staff error:", err);
@@ -134,7 +137,7 @@ router.put("/:id", protect, async (req, res) => {
   }
 });
 
-/* ─── DELETE /api/staff/:id ──────────────────────────────────────────────────── */
+/* ─── DELETE /api/staff/:id ──────────────────────────────────────────────────*/
 router.delete("/:id", protect, async (req, res) => {
   try {
     const staff = await Staff.findById(req.params.id);
@@ -144,12 +147,21 @@ router.delete("/:id", protect, async (req, res) => {
       return res.status(403).json({ message: "Cannot delete the company owner" });
     }
 
-    // Non-superadmin can only delete staff in their own company
     if (!req.user.isSuperAdmin && String(staff.company) !== String(req.user.company)) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
+    const staffName = staff.name;
+    const staffId   = staff._id.toString();
+
     await staff.deleteOne();
+
+    // ── Audit log ──────────────────────────────────────────────────────────
+    await logAudit(req, "Staff", "DELETE",
+      `Deleted staff member "${staffName}"`,
+      { entityId: staffId, entityName: staffName }
+    );
+
     return res.json({ message: "Staff deleted successfully" });
   } catch (err) {
     console.error("❌ Delete staff error:", err);
