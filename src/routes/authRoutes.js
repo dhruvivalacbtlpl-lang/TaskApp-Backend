@@ -1,16 +1,17 @@
-import express    from "express";
-import bcrypt     from "bcryptjs";
-import jwt        from "jsonwebtoken";
-import Staff      from "../models/Staff.js";
-import Role       from "../models/Role.js";
-import Company    from "../models/Company.js";
-import { protect } from "../middleware/auth.js";
+import express from "express";
+import bcrypt  from "bcryptjs";
+import jwt     from "jsonwebtoken";
+import Staff   from "../models/Staff.js";
+import Role    from "../models/Role.js";
+import Company from "../models/Company.js";
+import { protect }         from "../middleware/auth.js";
 import { sendCompanyCreatedMail } from "../services/mail.js";
-import { logAudit } from "../utils/logAudit.js"; // ← NEW
+import { logAudit }        from "../utils/logAudit.js";
+import { assignFreeTrial } from "../controllers/subscriptionController.js"; // ← NEW
 
 const router = express.Router();
 
-/* ─── POST /api/auth/signup ──────────────────────────────────────────────────── */
+/* ─── POST /api/auth/signup ───────────────────────────────────────────────── */
 router.post("/signup", async (req, res) => {
   try {
     const {
@@ -28,12 +29,8 @@ router.post("/signup", async (req, res) => {
     const existingCompany = await Company.findOne({
       name: { $regex: new RegExp(`^${companyName.trim()}$`, "i") },
     });
-    if (existingCompany) return res.status(400).json({ message: "A company with this name already exists" });
-
-    const existingStaff = await Staff.findOne({ email: ownerEmail.toLowerCase().trim() });
-    if (existingStaff) {
-      console.log(`ℹ️ Email ${ownerEmail} already used in another company — allowing for new company`);
-    }
+    if (existingCompany)
+      return res.status(400).json({ message: "A company with this name already exists" });
 
     let adminRole = await Role.findOne({ name: { $regex: /^admin$/i } });
     if (!adminRole) {
@@ -58,10 +55,14 @@ router.post("/signup", async (req, res) => {
       role:     adminRole._id,
       company:  company._id,
       isOwner:  true,
+      isActive: true,
     });
 
     company.owner = owner._id;
     await company.save();
+
+    // ✅ Auto-assign 1-month free trial on every new company signup
+    await assignFreeTrial(company._id);
 
     try {
       await sendCompanyCreatedMail({
@@ -75,7 +76,7 @@ router.post("/signup", async (req, res) => {
     }
 
     return res.status(201).json({
-      message: "Company and account created! Check your email.",
+      message: "Company created! You have a 1-month free trial. Check your email.",
       company: { id: company._id, name: company.name },
     });
   } catch (err) {
@@ -84,7 +85,7 @@ router.post("/signup", async (req, res) => {
   }
 });
 
-/* ─── GET /api/auth/companies?email=xxx ──────────────────────────────────────── */
+/* ─── GET /api/auth/companies?email=xxx ───────────────────────────────────── */
 router.get("/companies", async (req, res) => {
   try {
     const { email } = req.query;
@@ -110,14 +111,14 @@ router.get("/companies", async (req, res) => {
   }
 });
 
-/* ─── POST /api/auth/login ───────────────────────────────────────────────────── */
+/* ─── POST /api/auth/login ────────────────────────────────────────────────── */
 router.post("/login", async (req, res) => {
   try {
     const { email, password, companyId, companyName } = req.body;
-    if (!email || !password) return res.status(400).json({ message: "Email and password are required" });
+    if (!email || !password)
+      return res.status(400).json({ message: "Email and password are required" });
 
     const query = { email: email.toLowerCase().trim() };
-
     if (companyId) {
       query.company = companyId;
     } else if (companyName?.trim()) {
@@ -133,17 +134,23 @@ router.post("/login", async (req, res) => {
 
     if (!staff) return res.status(401).json({ message: "Invalid credentials" });
 
+    // ✅ Block deactivated staff (auto-deactivated when plan limit exceeded)
+    if (!staff.isOwner && !staff.isSuperAdmin && staff.isActive === false) {
+      return res.status(403).json({
+        code:    "ACCOUNT_DEACTIVATED",
+        message: "Your account has been deactivated due to a plan limit. Please contact your company owner to upgrade.",
+      });
+    }
+
     const isMatch = await bcrypt.compare(password, staff.password);
     if (!isMatch) return res.status(401).json({ message: "Invalid credentials" });
 
     let resolvedCompanyId = staff.company?._id || staff.company || null;
-
     if (!resolvedCompanyId) {
       const firstCompany = await Company.findOne().sort({ createdAt: 1 }).select("_id");
       if (firstCompany) {
         resolvedCompanyId = firstCompany._id;
         await Staff.findByIdAndUpdate(staff._id, { company: resolvedCompanyId });
-        console.log(`✅ Auto-assigned company ${resolvedCompanyId} to ${staff.email}`);
       }
     }
 
@@ -159,11 +166,12 @@ router.post("/login", async (req, res) => {
       { expiresIn: "7d" }
     );
 
-    const isSecure = req.headers.origin?.startsWith("https://");
+    // ✅ Cookie fix: sameSite "Lax" in dev, "None" only in prod (requires secure)
+    const isProd = process.env.NODE_ENV === "production";
     res.cookie("token", token, {
       httpOnly: true,
-      secure:   isSecure,
-      sameSite: isSecure ? "None" : "Lax",
+      secure:   isProd,
+      sameSite: isProd ? "None" : "Lax",
       maxAge:   7 * 24 * 60 * 60 * 1000,
     });
 
@@ -172,7 +180,6 @@ router.post("/login", async (req, res) => {
       .populate("role")
       .populate("company", "name status logo");
 
-    // ── Audit log LOGIN ────────────────────────────────────────────────────────
     req.user = {
       _id:       staff._id,
       id:        staff._id,
@@ -182,9 +189,7 @@ router.post("/login", async (req, res) => {
       role:      staff.role,
     };
     await logAudit(
-      req,
-      "Auth",
-      "LOGIN",
+      req, "Auth", "LOGIN",
       `"${staff.name}" logged in to ${staff.company?.name || "Unknown Company"}`,
       { entityId: staff._id.toString(), entityName: staff.name }
     ).catch(err => console.warn("⚠️ Login audit failed:", err.message));
@@ -208,7 +213,7 @@ router.post("/login", async (req, res) => {
   }
 });
 
-/* ─── GET /api/auth/profile ──────────────────────────────────────────────────── */
+/* ─── GET /api/auth/profile ───────────────────────────────────────────────── */
 router.get("/profile", protect, async (req, res) => {
   try {
     const staff = await Staff.findById(req.user._id)
@@ -224,14 +229,11 @@ router.get("/profile", protect, async (req, res) => {
   }
 });
 
-/* ─── POST /api/auth/logout ──────────────────────────────────────────────────── */
+/* ─── POST /api/auth/logout ───────────────────────────────────────────────── */
 router.post("/logout", protect, async (req, res) => {
   try {
-    // ── Audit log LOGOUT ──────────────────────────────────────────────────────
     await logAudit(
-      req,
-      "Auth",
-      "LOGOUT",
+      req, "Auth", "LOGOUT",
       `"${req.user?.name || "User"}" logged out`,
       { entityName: req.user?.name }
     ).catch(err => console.warn("⚠️ Logout audit failed:", err.message));
@@ -239,7 +241,12 @@ router.post("/logout", protect, async (req, res) => {
     console.warn("Logout audit error:", err.message);
   }
 
-  res.clearCookie("token", { httpOnly: true, sameSite: "None", secure: true });
+  const isProd = process.env.NODE_ENV === "production";
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure:   isProd,
+    sameSite: isProd ? "None" : "Lax",
+  });
   return res.json({ message: "Logged out successfully" });
 });
 

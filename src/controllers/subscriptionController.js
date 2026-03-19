@@ -1,82 +1,193 @@
-import Subscription from "../models/Subscription.js";
-import Plan from "../models/Plan.js";
-import UsageLog from "../models/UsageLog.js";
-import Company from "../models/Company.js";
-import { logAudit } from "../utils/logAudit.js";
+/**
+ * subscriptionController.js
+ *
+ * ✅ FIX: buildLiveUsage() counts staff with { isActive: { $ne: false } }
+ *         so old records without isActive field are counted correctly.
+ */
 
-// ── GET all plans (public) ────────────────────────────────────────────────────
+import Subscription from "../models/Subscription.js";
+import Plan         from "../models/Plan.js";
+import Company      from "../models/Company.js";
+import Staff        from "../models/Staff.js";
+import { logAudit } from "../utils/logAudit.js";
+import { getEffectivePlan } from "../middleware/checkLimit.js";
+
+// ── Helper: calculate end date ─────────────────────────────────────────────────
+function calculateEndDate(billingCycle) {
+  switch (billingCycle) {
+    case "trial":
+    case "monthly": {
+      const d = new Date(); d.setMonth(d.getMonth() + 1); return d;
+    }
+    case "quarterly": {
+      const d = new Date(); d.setMonth(d.getMonth() + 3); return d;
+    }
+    case "halfYearly": {
+      const d = new Date(); d.setMonth(d.getMonth() + 6); return d;
+    }
+    case "yearly": {
+      const d = new Date(); d.setFullYear(d.getFullYear() + 1); return d;
+    }
+    default: {
+      const d = new Date(); d.setMonth(d.getMonth() + 1); return d;
+    }
+  }
+}
+
+// ── Live usage counts from DB ──────────────────────────────────────────────────
+async function buildLiveUsage(companyId) {
+  const [staff, projects, tasks, issues, documents, taskStatuses] = await Promise.all([
+    // ✅ FIX: $ne: false catches existing staff where isActive is undefined/null
+    Staff.countDocuments({
+      company:  companyId,
+      isOwner:  false,
+      isActive: { $ne: false },
+    }),
+    safeCount("Project",    { company: companyId }),
+    safeCount("Task",       { company: companyId }),
+    safeCount("Issue",      { company: companyId }),
+    safeCount("Document",   { company: companyId }),
+    safeCount("TaskStatus", { company: companyId }),
+  ]);
+  return { staff, projects, tasks, issues, documents, taskStatuses };
+}
+
+async function safeCount(modelName, filter) {
+  try {
+    const { default: Model } = await import(`../models/${modelName}.js`);
+    return Model.countDocuments(filter);
+  } catch {
+    return 0;
+  }
+}
+
+// ── AUTO: Assign free trial when company is created ───────────────────────────
+export const assignFreeTrial = async (companyId) => {
+  try {
+    const freePlan = await Plan.findOne({ name: "free" });
+    if (!freePlan) {
+      console.error("❌ Free plan not found — run seedPlans first");
+      return null;
+    }
+
+    const startDate = new Date();
+    const endDate   = calculateEndDate("trial");
+
+    console.log(`📅 Free trial: ${startDate.toDateString()} → ${endDate.toDateString()}`);
+
+    const subscription = await Subscription.findOneAndUpdate(
+      { company: companyId },
+      {
+        plan:         freePlan._id,
+        billingCycle: "monthly",
+        status:       "active",
+        startDate,
+        endDate,
+        renewedAt:    startDate,
+        amount:       0,
+        paymentNote:  "Free trial — auto-assigned on signup",
+        assignedBy:   null,
+      },
+      { upsert: true, new: true, runValidators: false }
+    );
+
+    console.log(`✅ Free trial assigned to company ${companyId} until ${endDate.toDateString()}`);
+    return subscription;
+  } catch (err) {
+    console.error("❌ assignFreeTrial failed:", err.message);
+    return null;
+  }
+};
+
+// ── GET all plans (public) ─────────────────────────────────────────────────────
 export const getPlans = async (req, res) => {
   try {
     res.set("Cache-Control", "no-store");
     const plans = await Plan.find({ isActive: true }).sort({ "pricing.monthly": 1 });
     res.json(plans);
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: "Failed to fetch plans" });
   }
 };
 
-// ── GET current company subscription + usage ──────────────────────────────────
+// ── GET current company subscription + live usage ──────────────────────────────
 export const getMySubscription = async (req, res) => {
   try {
-    res.set("Cache-Control", "no-store"); // always fresh
-    const companyId = req.user.companyId;
+    res.set("Cache-Control", "no-store");
+    const companyId = req.user.companyId || req.user.company;
 
-    const subscription = await Subscription.findOne({ company: companyId })
-      .populate("plan")
-      .populate("assignedBy", "name email")
-      .lean();
+    const { plan, subscription, isExpired, isTrial } = await getEffectivePlan(companyId);
+    const usage = await buildLiveUsage(companyId);
 
-    if (!subscription) {
-      // No subscription — return free plan info
-      const freePlan = await Plan.findOne({ name: "free" }).lean();
-      return res.json({
-        subscription: null,
-        plan:         freePlan,
-        usage:        {},
-        isExpired:    false,
-        isFree:       true,
-      });
-    }
-
-    // Get current usage log
-    const now = new Date();
-    const usageLog = await UsageLog.findOne({
-      company:     companyId,
-      periodStart: { $lte: now },
-      periodEnd:   { $gte: now },
-    }).lean();
-
-    const isExpired = subscription.status === "expired" ||
-                      new Date() > new Date(subscription.endDate);
+    const daysRemaining = subscription?.endDate
+      ? Math.max(0, Math.ceil((new Date(subscription.endDate) - new Date()) / (1000 * 60 * 60 * 24)))
+      : 0;
 
     res.json({
       subscription,
-      plan:      subscription.plan,
-      usage:     usageLog?.usage || {},
+      plan,
+      usage,
       isExpired,
-      isFree:    subscription.plan?.name === "free",
-      deviceCount: subscription.activeSessions?.length || 0,
+      isTrial,
+      isFree:       plan?.name === "free",
+      daysRemaining,
     });
   } catch (err) {
+    console.error("getMySubscription error:", err);
     res.status(500).json({ message: "Failed to fetch subscription" });
   }
 };
 
-// ── SUPERADMIN: Get all company subscriptions ─────────────────────────────────
+// ── GET live usage summary ─────────────────────────────────────────────────────
+export const getUsageSummary = async (req, res) => {
+  try {
+    const companyId = req.user?.companyId || req.user?.company;
+    if (!companyId) return res.status(400).json({ message: "No company context" });
+
+    const { plan, isExpired } = await getEffectivePlan(companyId);
+    const usage = await buildLiveUsage(companyId);
+
+    const sub = await Subscription.findOne({ company: companyId }).lean();
+    const daysRemaining = sub?.endDate
+      ? Math.max(0, Math.ceil((new Date(sub.endDate) - new Date()) / (1000 * 60 * 60 * 24)))
+      : 0;
+
+    const resources = ["staff", "projects", "tasks", "issues", "documents", "taskStatuses"];
+    const summary = resources.map(key => ({
+      resource:  key,
+      used:      usage[key] ?? 0,
+      limit:     plan?.limits?.[key] ?? 0,
+      unlimited: plan?.limits?.[key] === -1,
+      exceeded:  plan?.limits?.[key] !== -1 && (usage[key] ?? 0) >= (plan?.limits?.[key] ?? 0),
+    }));
+
+    res.json({ summary, plan, isExpired, daysRemaining });
+  } catch (err) {
+    console.error("getUsageSummary error:", err);
+    res.status(500).json({ message: "Failed to fetch usage summary" });
+  }
+};
+
+// ── SUPERADMIN: Get all subscriptions ─────────────────────────────────────────
 export const getAllSubscriptions = async (req, res) => {
   try {
-    // Always bypass cache — superadmin needs real-time data
     res.set("Cache-Control", "no-store");
-
     const subscriptions = await Subscription.find()
       .populate("company", "name email logo")
       .populate("plan")
       .populate("assignedBy", "name")
-      .sort({ updatedAt: -1 }) // sort by most recently updated
+      .sort({ updatedAt: -1 })
       .lean();
 
-    res.json(subscriptions);
-  } catch (err) {
+    const withUsage = await Promise.all(
+      subscriptions.map(async (sub) => ({
+        ...sub,
+        usage: await buildLiveUsage(sub.company?._id),
+      }))
+    );
+
+    res.json(withUsage);
+  } catch {
     res.status(500).json({ message: "Failed to fetch subscriptions" });
   }
 };
@@ -85,10 +196,8 @@ export const getAllSubscriptions = async (req, res) => {
 export const assignPlan = async (req, res) => {
   try {
     const { companyId, planId, billingCycle = "monthly", paymentNote = "Assigned by SuperAdmin" } = req.body;
-
-    if (!companyId || !planId) {
+    if (!companyId || !planId)
       return res.status(400).json({ message: "companyId and planId are required" });
-    }
 
     const [company, plan] = await Promise.all([
       Company.findById(companyId),
@@ -97,41 +206,28 @@ export const assignPlan = async (req, res) => {
     if (!company) return res.status(404).json({ message: "Company not found" });
     if (!plan)    return res.status(404).json({ message: "Plan not found" });
 
-    // Calculate end date based on billing cycle
-    const endDate = calculateEndDate(billingCycle);
+    const startDate = new Date();
+    const endDate   = calculateEndDate(billingCycle);
 
-    // Upsert subscription (update if exists, create if not)
     const subscription = await Subscription.findOneAndUpdate(
       { company: companyId },
       {
-        plan,
+        plan:        planId,
         billingCycle,
         status:      "active",
-        startDate:   new Date(),
+        startDate,
         endDate,
-        renewedAt:   new Date(),
+        renewedAt:   startDate,
         amount:      plan.pricing[billingCycle] || 0,
         paymentNote,
         assignedBy:  req.user._id || req.user.id,
-        $set: { activeSessions: [] }, // reset sessions on plan change
+        $set: { activeSessions: [] },
       },
-      { upsert: true, new: true, runValidators: true }
+      { upsert: true, new: true, runValidators: false }
     ).populate("plan");
 
-    // Reset usage log for new period
-    await UsageLog.findOneAndUpdate(
-      { company: companyId, periodStart: { $lte: new Date() }, periodEnd: { $gte: new Date() } },
-      {
-        $setOnInsert: {
-          company:      companyId,
-          subscription: subscription._id,
-          periodStart:  new Date(),
-          periodEnd:    endDate,
-          usage: { staff: 0, projects: 0, teamMembers: 0, tasks: 0, issues: 0, documents: 0, taskStatuses: 0 },
-        },
-      },
-      { upsert: true }
-    );
+    const staffLimit = plan.limits?.staff ?? 0;
+    if (staffLimit > 0) await enforceStaffLimit(companyId, staffLimit);
 
     await logAudit(req, "Subscription", "ASSIGN",
       `Assigned ${plan.displayName} plan (${billingCycle}) to ${company.name}`,
@@ -144,12 +240,11 @@ export const assignPlan = async (req, res) => {
   }
 };
 
-// ── Company self-purchase plan ────────────────────────────────────────────────
+// ── Company self-purchase plan ─────────────────────────────────────────────────
 export const purchasePlan = async (req, res) => {
   try {
     const { planId, billingCycle = "monthly" } = req.body;
-    const companyId = req.user.companyId;
-
+    const companyId = req.user.companyId || req.user.company;
     if (!planId) return res.status(400).json({ message: "planId is required" });
 
     const [company, plan] = await Promise.all([
@@ -159,7 +254,8 @@ export const purchasePlan = async (req, res) => {
     if (!company) return res.status(404).json({ message: "Company not found" });
     if (!plan)    return res.status(404).json({ message: "Plan not found" });
 
-    const endDate = calculateEndDate(billingCycle);
+    const startDate = new Date();
+    const endDate   = calculateEndDate(billingCycle);
 
     const subscription = await Subscription.findOneAndUpdate(
       { company: companyId },
@@ -167,31 +263,16 @@ export const purchasePlan = async (req, res) => {
         plan:        planId,
         billingCycle,
         status:      "active",
-        startDate:   new Date(),
+        startDate,
         endDate,
-        renewedAt:   new Date(),
+        renewedAt:   startDate,
         amount:      plan.pricing[billingCycle] || 0,
         paymentNote: `Self-purchased ${plan.displayName} (${billingCycle})`,
         assignedBy:  null,
         $set: { activeSessions: [] },
       },
-      { upsert: true, new: true, runValidators: true }
+      { upsert: true, new: true, runValidators: false }
     ).populate("plan");
-
-    // Reset usage
-    await UsageLog.findOneAndUpdate(
-      { company: companyId, periodStart: { $lte: new Date() }, periodEnd: { $gte: new Date() } },
-      {
-        $setOnInsert: {
-          company:      companyId,
-          subscription: subscription._id,
-          periodStart:  new Date(),
-          periodEnd:    endDate,
-          usage: { staff: 0, projects: 0, teamMembers: 0, tasks: 0, issues: 0, documents: 0, taskStatuses: 0 },
-        },
-      },
-      { upsert: true }
-    );
 
     await logAudit(req, "Subscription", "PURCHASE",
       `Purchased ${plan.displayName} plan (${billingCycle})`,
@@ -204,44 +285,78 @@ export const purchasePlan = async (req, res) => {
   }
 };
 
-// ── SUPERADMIN: Clear device sessions for a company ───────────────────────────
+// ── SUPERADMIN: Clear device sessions ─────────────────────────────────────────
 export const clearDeviceSessions = async (req, res) => {
   try {
     const { companyId } = req.params;
     await Subscription.updateOne({ company: companyId }, { $set: { activeSessions: [] } });
-
     await logAudit(req, "Subscription", "UPDATE",
       `Cleared all device sessions for company`,
       { entityId: companyId }
     );
-
     res.json({ message: "Device sessions cleared" });
-  } catch (err) {
+  } catch {
     res.status(500).json({ message: "Failed to clear sessions" });
   }
 };
 
-// ── Helper: calculate end date from billing cycle ─────────────────────────────
-function calculateEndDate(billingCycle) {
-  const now = new Date();
-  switch (billingCycle) {
-    case "monthly":    return new Date(now.setMonth(now.getMonth() + 1));
-    case "quarterly":  return new Date(now.setMonth(now.getMonth() + 3));
-    case "halfYearly": return new Date(now.setMonth(now.getMonth() + 6));
-    case "yearly":     return new Date(now.setFullYear(now.getFullYear() + 1));
-    default:           return new Date(now.setMonth(now.getMonth() + 1));
+// ── CRON: Auto-expire subscriptions & enforce limits ──────────────────────────
+export const checkExpiredSubscriptions = async () => {
+  try {
+    const now     = new Date();
+    const expired = await Subscription.find({
+      status:  "active",
+      endDate: { $lt: now },
+    }).populate("plan");
+
+    for (const sub of expired) {
+      sub.status = "expired";
+      await sub.save();
+
+      const freePlan       = await Plan.findOne({ name: "free" }).lean();
+      const freeStaffLimit = freePlan?.limits?.staff ?? 3;
+      await enforceStaffLimit(sub.company.toString(), freeStaffLimit);
+
+      console.log(`⏰ Subscription expired for company ${sub.company} — staff trimmed to ${freeStaffLimit}`);
+    }
+
+    if (expired.length > 0) {
+      console.log(`✅ Processed ${expired.length} expired subscription(s)`);
+    }
+  } catch (err) {
+    console.error("❌ checkExpiredSubscriptions error:", err.message);
   }
+};
+
+// ── Helper: deactivate newest staff beyond limit ───────────────────────────────
+async function enforceStaffLimit(companyId, limit) {
+  if (limit === -1) return;
+
+  // ✅ FIX: same $ne: false filter
+  const activeStaff = await Staff.find({
+    company:  companyId,
+    isOwner:  false,
+    isActive: { $ne: false },
+  })
+    .sort({ createdAt: -1 })
+    .select("_id");
+
+  if (activeStaff.length <= limit) return;
+
+  const excessIds = activeStaff.slice(0, activeStaff.length - limit).map(s => s._id);
+  await Staff.updateMany({ _id: { $in: excessIds } }, { $set: { isActive: false } });
+  console.log(`⚠️  Deactivated ${excessIds.length} excess staff for company ${companyId}`);
 }
 
-// ── CREATE Plan ───────────────────────────────────────────────────────────────
+// ── Plan CRUD (SuperAdmin) ─────────────────────────────────────────────────────
 export const createPlan = async (req, res) => {
   try {
     const { name, displayName, description, color, pricing, limits, features } = req.body;
-    if (!name || !displayName) return res.status(400).json({ message: "name and displayName are required" });
-
+    if (!name || !displayName)
+      return res.status(400).json({ message: "name and displayName are required" });
     const exists = await Plan.findOne({ name });
-    if (exists) return res.status(400).json({ message: `Plan "${name}" already exists` });
-
+    if (exists)
+      return res.status(400).json({ message: `Plan "${name}" already exists` });
     const plan = await Plan.create({ name, displayName, description, color, pricing, limits, features });
     res.status(201).json(plan);
   } catch (err) {
@@ -249,14 +364,9 @@ export const createPlan = async (req, res) => {
   }
 };
 
-// ── UPDATE Plan ───────────────────────────────────────────────────────────────
 export const updatePlan = async (req, res) => {
   try {
-    const plan = await Plan.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: false }
-    );
+    const plan = await Plan.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: false });
     if (!plan) return res.status(404).json({ message: "Plan not found" });
     res.json(plan);
   } catch (err) {
@@ -264,17 +374,12 @@ export const updatePlan = async (req, res) => {
   }
 };
 
-// ── DELETE Plan ───────────────────────────────────────────────────────────────
 export const deletePlan = async (req, res) => {
   try {
     const plan = await Plan.findById(req.params.id);
     if (!plan) return res.status(404).json({ message: "Plan not found" });
-
-    // Prevent deleting built-in plans
-    if (["free","basic","pro"].includes(plan.name)) {
-      return res.status(400).json({ message: `Cannot delete built-in plan "${plan.name}". You can edit it instead.` });
-    }
-
+    if (["free", "basic", "pro"].includes(plan.name))
+      return res.status(400).json({ message: `Cannot delete built-in plan "${plan.name}".` });
     await Plan.findByIdAndDelete(req.params.id);
     res.json({ message: "Plan deleted" });
   } catch (err) {

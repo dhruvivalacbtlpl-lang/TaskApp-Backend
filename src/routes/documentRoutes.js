@@ -1,7 +1,9 @@
 import express from "express";
+import multer  from "multer";
 import path    from "path";
 import fs      from "fs";
-import multer  from "multer";
+import { protect }    from "../middleware/auth.js";
+import { checkLimit } from "../middleware/checkLimit.js";  // ← NEW
 import {
   getDocuments,
   getDocumentById,
@@ -15,7 +17,7 @@ import {
 } from "../controllers/documentController.js";
 import { logAudit } from "../utils/logAudit.js";
 
-// ── Multer storage ────────────────────────────────────────────────────────────
+// ── Multer storage ─────────────────────────────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = "uploads/documents";
@@ -40,34 +42,38 @@ const upload = multer({
 
 const router = express.Router();
 
-// ── Token verify ──────────────────────────────────────────────────────────────
-router.get("/verify-token", verifyDocumentToken);
-
-// ── Access Requests ───────────────────────────────────────────────────────────
+// ── Token verify & access requests (no limit needed) ──────────────────────────
+router.get("/verify-token",               verifyDocumentToken);
 router.get("/access-requests",            getAccessRequests);
 router.put("/access-requests/:requestId", respondToAccessRequest);
 
-// ── GET (reads — no audit needed) ─────────────────────────────────────────────
-router.get("/",    getDocuments);
-router.get("/:id", getDocumentById);
+// ── GET (reads — no limit check needed) ───────────────────────────────────────
+router.get("/",    protect, getDocuments);
+router.get("/:id", protect, getDocumentById);
 
-// ── CREATE ────────────────────────────────────────────────────────────────────
-router.post("/", upload.single("file"), async (req, res, next) => {
-  const originalJson = res.json.bind(res);
-  res.json = async (data) => {
-    if (res.statusCode < 400 && data?._id) {
-      await logAudit(req, "Document", "CREATE",
-        `Created document "${data.title || data.name || "Untitled"}"`,
-        { entityId: data._id?.toString(), entityName: data.title || data.name }
-      );
-    }
-    return originalJson(data);
-  };
-  return createDocument(req, res, next);
-});
+/* ─── POST /api/documents ─────────────────────────────────────────────────── */
+// ✅ checkLimit("documents") blocks creation when plan document limit is reached
+router.post("/",
+  protect,
+  checkLimit("documents"),
+  upload.single("file"),
+  async (req, res, next) => {
+    const originalJson = res.json.bind(res);
+    res.json = async (data) => {
+      if (res.statusCode < 400 && data?._id) {
+        await logAudit(req, "Document", "CREATE",
+          `Created document "${data.title || data.name || "Untitled"}"`,
+          { entityId: data._id?.toString(), entityName: data.title || data.name }
+        );
+      }
+      return originalJson(data);
+    };
+    return createDocument(req, res, next);
+  }
+);
 
-// ── UPDATE ────────────────────────────────────────────────────────────────────
-router.put("/:id", upload.single("file"), async (req, res, next) => {
+/* ─── PUT /api/documents/:id ──────────────────────────────────────────────── */
+router.put("/:id", protect, upload.single("file"), async (req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = async (data) => {
     if (res.statusCode < 400 && data) {
@@ -81,8 +87,8 @@ router.put("/:id", upload.single("file"), async (req, res, next) => {
   return updateDocument(req, res, next);
 });
 
-// ── DELETE ────────────────────────────────────────────────────────────────────
-router.delete("/:id", async (req, res, next) => {
+/* ─── DELETE /api/documents/:id ───────────────────────────────────────────── */
+router.delete("/:id", protect, async (req, res, next) => {
   const originalJson = res.json.bind(res);
   res.json = async (data) => {
     if (res.statusCode < 400) {
@@ -96,7 +102,7 @@ router.delete("/:id", async (req, res, next) => {
   return deleteDocument(req, res, next);
 });
 
-// ── Request Access ────────────────────────────────────────────────────────────
+// ── Request Access ─────────────────────────────────────────────────────────────
 router.post("/:id/request-access", requestAccess);
 
 export default router;

@@ -2,13 +2,14 @@ import express from "express";
 import bcrypt  from "bcryptjs";
 import Staff   from "../models/Staff.js";
 import Company from "../models/Company.js";
-import { protect } from "../middleware/auth.js";
+import { protect }     from "../middleware/auth.js";
+import { checkLimit }  from "../middleware/checkLimit.js";   // ← NEW
 import { sendWelcomeStaffMail } from "../services/mail.js";
 import { logAudit } from "../utils/logAudit.js";
 
 const router = express.Router();
 
-/* ─── GET /api/staff ─────────────────────────────────────────────────────────*/
+/* ─── GET /api/staff ──────────────────────────────────────────────────────── */
 router.get("/", protect, async (req, res) => {
   try {
     const filter = req.user.isSuperAdmin ? {} : { company: req.user.company };
@@ -38,8 +39,11 @@ router.get("/:id", protect, async (req, res) => {
   }
 });
 
-/* ─── POST /api/staff ────────────────────────────────────────────────────────*/
-router.post("/", protect, async (req, res) => {
+/* ─── POST /api/staff ─────────────────────────────────────────────────────── */
+// ✅ checkLimit("staff") runs before createStaff:
+//    - Deactivates newest excess staff if over limit
+//    - Blocks creation if still at/over limit after deactivation
+router.post("/", protect, checkLimit("staff"), async (req, res) => {
   try {
     const { name, email, mobile, password, role, companyId: bodyCompanyId } = req.body;
 
@@ -65,6 +69,7 @@ router.post("/", protect, async (req, res) => {
       role:     role || null,
       company:  companyId,
       isOwner:  false,
+      isActive: true,
     });
 
     let companyName = "TaskApp";
@@ -73,14 +78,15 @@ router.post("/", protect, async (req, res) => {
       if (company) companyName = company.name;
     }
 
-    await sendWelcomeStaffMail({ name: name.trim(), email: email.toLowerCase().trim(), password, companyName });
+    await sendWelcomeStaffMail({
+      name: name.trim(), email: email.toLowerCase().trim(), password, companyName,
+    });
 
     const populated = await Staff.findById(staff._id)
       .select("-password")
       .populate("role",    "name permissions")
       .populate("company", "name");
 
-    // ── Audit log ──────────────────────────────────────────────────────────
     await logAudit(req, "Staff", "CREATE",
       `Created staff member "${name.trim()}"`,
       { entityId: staff._id.toString(), entityName: name.trim() }
@@ -93,10 +99,10 @@ router.post("/", protect, async (req, res) => {
   }
 });
 
-/* ─── PUT /api/staff/:id ─────────────────────────────────────────────────────*/
+/* ─── PUT /api/staff/:id ──────────────────────────────────────────────────── */
 router.put("/:id", protect, async (req, res) => {
   try {
-    const { name, email, mobile, role, password } = req.body;
+    const { name, email, mobile, role, password, isActive } = req.body;
 
     const staff = await Staff.findById(req.params.id);
     if (!staff) return res.status(404).json({ message: "Staff not found" });
@@ -107,10 +113,11 @@ router.put("/:id", protect, async (req, res) => {
 
     const before = { name: staff.name, email: staff.email, role: staff.role };
 
-    if (name)                 staff.name   = name.trim();
-    if (email)                staff.email  = email.toLowerCase().trim();
-    if (mobile !== undefined) staff.mobile = mobile;
-    if (role)                 staff.role   = role;
+    if (name)                  staff.name     = name.trim();
+    if (email)                 staff.email    = email.toLowerCase().trim();
+    if (mobile !== undefined)  staff.mobile   = mobile;
+    if (role)                  staff.role     = role;
+    if (isActive !== undefined) staff.isActive = isActive; // allow owner to re-activate
 
     if (password) {
       if (password.length < 6) return res.status(400).json({ message: "Password must be at least 6 characters" });
@@ -124,7 +131,6 @@ router.put("/:id", protect, async (req, res) => {
       .populate("role",    "name permissions")
       .populate("company", "name");
 
-    // ── Audit log ──────────────────────────────────────────────────────────
     await logAudit(req, "Staff", "UPDATE",
       `Updated staff member "${staff.name}"`,
       { entityId: staff._id.toString(), entityName: staff.name, before }
@@ -137,7 +143,7 @@ router.put("/:id", protect, async (req, res) => {
   }
 });
 
-/* ─── DELETE /api/staff/:id ──────────────────────────────────────────────────*/
+/* ─── DELETE /api/staff/:id ───────────────────────────────────────────────── */
 router.delete("/:id", protect, async (req, res) => {
   try {
     const staff = await Staff.findById(req.params.id);
@@ -156,7 +162,6 @@ router.delete("/:id", protect, async (req, res) => {
 
     await staff.deleteOne();
 
-    // ── Audit log ──────────────────────────────────────────────────────────
     await logAudit(req, "Staff", "DELETE",
       `Deleted staff member "${staffName}"`,
       { entityId: staffId, entityName: staffName }
