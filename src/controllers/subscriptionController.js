@@ -1,37 +1,30 @@
 /**
  * subscriptionController.js
- *
- * ✅ FIX: buildLiveUsage() counts staff with { isActive: { $ne: false } }
- *         so old records without isActive field are counted correctly.
+ * * Includes: 
+ * - Feature Allowance (Checkboxes) support
+ * - Staff limit enforcement
+ * - Subscription & Plan CRUD
  */
 
 import Subscription from "../models/Subscription.js";
-import Plan         from "../models/Plan.js";
-import Company      from "../models/Company.js";
-import Staff        from "../models/Staff.js";
+import Plan from "../models/Plan.js";
+import Company from "../models/Company.js";
+import Staff from "../models/Staff.js";
 import { logAudit } from "../utils/logAudit.js";
 import { getEffectivePlan } from "../middleware/checkLimit.js";
 
 // ── Helper: calculate end date ─────────────────────────────────────────────────
 function calculateEndDate(billingCycle) {
+  const d = new Date();
   switch (billingCycle) {
     case "trial":
-    case "monthly": {
-      const d = new Date(); d.setMonth(d.getMonth() + 1); return d;
-    }
-    case "quarterly": {
-      const d = new Date(); d.setMonth(d.getMonth() + 3); return d;
-    }
-    case "halfYearly": {
-      const d = new Date(); d.setMonth(d.getMonth() + 6); return d;
-    }
-    case "yearly": {
-      const d = new Date(); d.setFullYear(d.getFullYear() + 1); return d;
-    }
-    default: {
-      const d = new Date(); d.setMonth(d.getMonth() + 1); return d;
-    }
+    case "monthly": d.setMonth(d.getMonth() + 1); break;
+    case "quarterly": d.setMonth(d.getMonth() + 3); break;
+    case "halfYearly": d.setMonth(d.getMonth() + 6); break;
+    case "yearly": d.setFullYear(d.getFullYear() + 1); break;
+    default: d.setMonth(d.getMonth() + 1);
   }
+  return d;
 }
 
 // ── Live usage counts from DB ──────────────────────────────────────────────────
@@ -39,14 +32,14 @@ async function buildLiveUsage(companyId) {
   const [staff, projects, tasks, issues, documents, taskStatuses] = await Promise.all([
     // ✅ FIX: $ne: false catches existing staff where isActive is undefined/null
     Staff.countDocuments({
-      company:  companyId,
-      isOwner:  false,
+      company: companyId,
+      isOwner: false,
       isActive: { $ne: false },
     }),
-    safeCount("Project",    { company: companyId }),
-    safeCount("Task",       { company: companyId }),
-    safeCount("Issue",      { company: companyId }),
-    safeCount("Document",   { company: companyId }),
+    safeCount("Project", { company: companyId }),
+    safeCount("Task", { company: companyId }),
+    safeCount("Issue", { company: companyId }),
+    safeCount("Document", { company: companyId }),
     safeCount("TaskStatus", { company: companyId }),
   ]);
   return { staff, projects, tasks, issues, documents, taskStatuses };
@@ -71,27 +64,23 @@ export const assignFreeTrial = async (companyId) => {
     }
 
     const startDate = new Date();
-    const endDate   = calculateEndDate("trial");
-
-    console.log(`📅 Free trial: ${startDate.toDateString()} → ${endDate.toDateString()}`);
+    const endDate = calculateEndDate("trial");
 
     const subscription = await Subscription.findOneAndUpdate(
       { company: companyId },
       {
-        plan:         freePlan._id,
+        plan: freePlan._id,
         billingCycle: "monthly",
-        status:       "active",
+        status: "active",
         startDate,
         endDate,
-        renewedAt:    startDate,
-        amount:       0,
-        paymentNote:  "Free trial — auto-assigned on signup",
-        assignedBy:   null,
+        renewedAt: startDate,
+        amount: 0,
+        paymentNote: "Free trial — auto-assigned on signup",
+        assignedBy: null,
       },
       { upsert: true, new: true, runValidators: false }
     );
-
-    console.log(`✅ Free trial assigned to company ${companyId} until ${endDate.toDateString()}`);
     return subscription;
   } catch (err) {
     console.error("❌ assignFreeTrial failed:", err.message);
@@ -129,11 +118,12 @@ export const getMySubscription = async (req, res) => {
       usage,
       isExpired,
       isTrial,
-      isFree:       plan?.name === "free",
+      isFree: plan?.name === "free",
       daysRemaining,
+      // ✅ Features array for frontend checkbox checks
+      allowedFeatures: plan?.features || [],
     });
   } catch (err) {
-    console.error("getMySubscription error:", err);
     res.status(500).json({ message: "Failed to fetch subscription" });
   }
 };
@@ -154,16 +144,15 @@ export const getUsageSummary = async (req, res) => {
 
     const resources = ["staff", "projects", "tasks", "issues", "documents", "taskStatuses"];
     const summary = resources.map(key => ({
-      resource:  key,
-      used:      usage[key] ?? 0,
-      limit:     plan?.limits?.[key] ?? 0,
+      resource: key,
+      used: usage[key] ?? 0,
+      limit: plan?.limits?.[key] ?? 0,
       unlimited: plan?.limits?.[key] === -1,
-      exceeded:  plan?.limits?.[key] !== -1 && (usage[key] ?? 0) >= (plan?.limits?.[key] ?? 0),
+      exceeded: plan?.limits?.[key] !== -1 && (usage[key] ?? 0) >= (plan?.limits?.[key] ?? 0),
     }));
 
     res.json({ summary, plan, isExpired, daysRemaining });
   } catch (err) {
-    console.error("getUsageSummary error:", err);
     res.status(500).json({ message: "Failed to fetch usage summary" });
   }
 };
@@ -204,23 +193,23 @@ export const assignPlan = async (req, res) => {
       Plan.findById(planId),
     ]);
     if (!company) return res.status(404).json({ message: "Company not found" });
-    if (!plan)    return res.status(404).json({ message: "Plan not found" });
+    if (!plan) return res.status(404).json({ message: "Plan not found" });
 
     const startDate = new Date();
-    const endDate   = calculateEndDate(billingCycle);
+    const endDate = calculateEndDate(billingCycle);
 
     const subscription = await Subscription.findOneAndUpdate(
       { company: companyId },
       {
-        plan:        planId,
+        plan: planId,
         billingCycle,
-        status:      "active",
+        status: "active",
         startDate,
         endDate,
-        renewedAt:   startDate,
-        amount:      plan.pricing[billingCycle] || 0,
+        renewedAt: startDate,
+        amount: plan.pricing[billingCycle] || 0,
         paymentNote,
-        assignedBy:  req.user._id || req.user.id,
+        assignedBy: req.user._id || req.user.id,
         $set: { activeSessions: [] },
       },
       { upsert: true, new: true, runValidators: false }
@@ -252,23 +241,23 @@ export const purchasePlan = async (req, res) => {
       Plan.findById(planId),
     ]);
     if (!company) return res.status(404).json({ message: "Company not found" });
-    if (!plan)    return res.status(404).json({ message: "Plan not found" });
+    if (!plan) return res.status(404).json({ message: "Plan not found" });
 
     const startDate = new Date();
-    const endDate   = calculateEndDate(billingCycle);
+    const endDate = calculateEndDate(billingCycle);
 
     const subscription = await Subscription.findOneAndUpdate(
       { company: companyId },
       {
-        plan:        planId,
+        plan: planId,
         billingCycle,
-        status:      "active",
+        status: "active",
         startDate,
         endDate,
-        renewedAt:   startDate,
-        amount:      plan.pricing[billingCycle] || 0,
+        renewedAt: startDate,
+        amount: plan.pricing[billingCycle] || 0,
         paymentNote: `Self-purchased ${plan.displayName} (${billingCycle})`,
-        assignedBy:  null,
+        assignedBy: null,
         $set: { activeSessions: [] },
       },
       { upsert: true, new: true, runValidators: false }
@@ -303,9 +292,9 @@ export const clearDeviceSessions = async (req, res) => {
 // ── CRON: Auto-expire subscriptions & enforce limits ──────────────────────────
 export const checkExpiredSubscriptions = async () => {
   try {
-    const now     = new Date();
+    const now = new Date();
     const expired = await Subscription.find({
-      status:  "active",
+      status: "active",
       endDate: { $lt: now },
     }).populate("plan");
 
@@ -313,15 +302,11 @@ export const checkExpiredSubscriptions = async () => {
       sub.status = "expired";
       await sub.save();
 
-      const freePlan       = await Plan.findOne({ name: "free" }).lean();
+      const freePlan = await Plan.findOne({ name: "free" }).lean();
       const freeStaffLimit = freePlan?.limits?.staff ?? 3;
       await enforceStaffLimit(sub.company.toString(), freeStaffLimit);
 
-      console.log(`⏰ Subscription expired for company ${sub.company} — staff trimmed to ${freeStaffLimit}`);
-    }
-
-    if (expired.length > 0) {
-      console.log(`✅ Processed ${expired.length} expired subscription(s)`);
+      console.log(`⏰ Expired for company ${sub.company} — staff trimmed to ${freeStaffLimit}`);
     }
   } catch (err) {
     console.error("❌ checkExpiredSubscriptions error:", err.message);
@@ -331,11 +316,9 @@ export const checkExpiredSubscriptions = async () => {
 // ── Helper: deactivate newest staff beyond limit ───────────────────────────────
 async function enforceStaffLimit(companyId, limit) {
   if (limit === -1) return;
-
-  // ✅ FIX: same $ne: false filter
   const activeStaff = await Staff.find({
-    company:  companyId,
-    isOwner:  false,
+    company: companyId,
+    isOwner: false,
     isActive: { $ne: false },
   })
     .sort({ createdAt: -1 })
@@ -345,19 +328,19 @@ async function enforceStaffLimit(companyId, limit) {
 
   const excessIds = activeStaff.slice(0, activeStaff.length - limit).map(s => s._id);
   await Staff.updateMany({ _id: { $in: excessIds } }, { $set: { isActive: false } });
-  console.log(`⚠️  Deactivated ${excessIds.length} excess staff for company ${companyId}`);
 }
 
 // ── Plan CRUD (SuperAdmin) ─────────────────────────────────────────────────────
 export const createPlan = async (req, res) => {
   try {
     const { name, displayName, description, color, pricing, limits, features } = req.body;
-    if (!name || !displayName)
-      return res.status(400).json({ message: "name and displayName are required" });
+    if (!name || !displayName) return res.status(400).json({ message: "name and displayName required" });
+
     const exists = await Plan.findOne({ name });
-    if (exists)
-      return res.status(400).json({ message: `Plan "${name}" already exists` });
-    const plan = await Plan.create({ name, displayName, description, color, pricing, limits, features });
+    if (exists) return res.status(400).json({ message: "Plan already exists" });
+
+    // ✅ Features array saved here
+    const plan = await Plan.create({ name, displayName, description, color, pricing, limits, features: features || [] });
     res.status(201).json(plan);
   } catch (err) {
     res.status(500).json({ message: "Failed to create plan", details: err.message });
@@ -366,7 +349,8 @@ export const createPlan = async (req, res) => {
 
 export const updatePlan = async (req, res) => {
   try {
-    const plan = await Plan.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: false });
+    // ✅ $set handles the incoming 'features' checkbox array automatically
+    const plan = await Plan.findByIdAndUpdate(req.params.id, { $set: req.body }, { new: true, runValidators: false });
     if (!plan) return res.status(404).json({ message: "Plan not found" });
     res.json(plan);
   } catch (err) {
@@ -379,10 +363,10 @@ export const deletePlan = async (req, res) => {
     const plan = await Plan.findById(req.params.id);
     if (!plan) return res.status(404).json({ message: "Plan not found" });
     if (["free", "basic", "pro"].includes(plan.name))
-      return res.status(400).json({ message: `Cannot delete built-in plan "${plan.name}".` });
+      return res.status(400).json({ message: `Cannot delete system plan "${plan.name}".` });
     await Plan.findByIdAndDelete(req.params.id);
     res.json({ message: "Plan deleted" });
   } catch (err) {
-    res.status(500).json({ message: "Failed to delete plan", details: err.message });
+    res.status(500).json({ message: "Failed to delete plan" });
   }
 };

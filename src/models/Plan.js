@@ -2,39 +2,36 @@ import mongoose from "mongoose";
 
 const planSchema = new mongoose.Schema(
   {
-    name:        { type: String, required: true, enum: ["free", "basic", "pro"], unique: true },
-    displayName: { type: String, required: true }, // "Free", "Basic", "Pro"
-    description: { type: String, default: "" },
-    color:       { type: String, default: "#6366f1" }, // for UI badge
-
-    // Pricing in USD per billing cycle
-    pricing: {
-      monthly:    { type: Number, default: 0 },
-      quarterly:  { type: Number, default: 0 }, // 3 months
-      halfYearly: { type: Number, default: 0 }, // 6 months
-      yearly:     { type: Number, default: 0 },
-    },
-
-    // Feature limits (-1 = unlimited)
+    name: { type: String, required: true, unique: true },
+    displayName: { type: String, required: true },
+    description: { type: String },
+    color: { type: String, default: "blue" },
+    
+    // Numerical Limits
     limits: {
-      staff:        { type: Number, default: 3   },
-      projects:     { type: Number, default: 2   },
-      teamMembers:  { type: Number, default: 1   },
-      tasks:        { type: Number, default: 20  },
-      issues:       { type: Number, default: 20  },
-      documents:    { type: Number, default: 5   },
-      taskStatuses: { type: Number, default: 3   },
-      bulkUpload:   { type: Number, default: 0   }, // 0 = disabled, -1 = unlimited, N = max rows
-      devices:      { type: Number, default: 1   }, // concurrent device sessions
+      staff: { type: Number, default: 3 },
+      projects: { type: Number, default: 5 },
+      tasks: { type: Number, default: -1 },
+      issues: { type: Number, default: -1 },
+      documents: { type: Number, default: -1 },
+      taskStatuses: { type: Number, default: -1 },
     },
 
-    // Feature flags
+    // ✅ FIXED: Features as an Object of Booleans (Matching your Seed data)
     features: {
       notifications: { type: Boolean, default: false },
-      bulkUpload:    { type: Boolean, default: false },
+      bulkUpload: { type: Boolean, default: false },
       prioritySupport: { type: Boolean, default: false },
+      aiTools: { type: Boolean, default: false },
+      customBranding: { type: Boolean, default: false },
     },
 
+    pricing: {
+      monthly: { type: Number, default: 0 },
+      quarterly: { type: Number, default: 0 },
+      halfYearly: { type: Number, default: 0 },
+      yearly: { type: Number, default: 0 },
+    },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
