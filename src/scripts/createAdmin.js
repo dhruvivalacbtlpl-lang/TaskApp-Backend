@@ -1,11 +1,6 @@
 import bcrypt from "bcryptjs";
 import Staff from "../models/Staff.js";
 
-/**
- * Creates the SuperAdmin account.
- * SuperAdmin has NO company — they exist above all companies.
- * Login is done WITHOUT a companyName field (handled separately in authController).
- */
 const createAdmin = async () => {
   try {
     const adminExists = await Staff.findOne({ email: "admin@taskapp.com" });

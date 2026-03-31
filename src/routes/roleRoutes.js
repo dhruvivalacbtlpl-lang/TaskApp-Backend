@@ -3,8 +3,6 @@ import Role from "../models/Role.js";
 import { logAudit } from "../utils/logAudit.js";
 import { protect } from "../middleware/auth.js";
 
-// NOTE: We keep the original getRoles/getRoleById from roleController for reads
-// and add logAudit directly to write operations here
 import {
   getRoles,
   getRoleById,
@@ -20,7 +18,7 @@ roleRoutes.get("/",    getRoles);
 roleRoutes.get("/:id", getRoleById);
 
 // ── CREATE ────────────────────────────────────────────────────────────────────
-roleRoutes.post("/create", protect, async (req, res, next) => {
+roleRoutes.post("/create", protect, async (req, res,  next) => {
   // Store original res.json to intercept
   const originalJson = res.json.bind(res);
   res.json = async (data) => {
@@ -30,7 +28,7 @@ roleRoutes.post("/create", protect, async (req, res, next) => {
         { entityId: data._id?.toString(), entityName: data.name }
       );
     }
-    return originalJson(data);
+    return originalJson(data);      
   };
   return createRole(req, res, next);
 });

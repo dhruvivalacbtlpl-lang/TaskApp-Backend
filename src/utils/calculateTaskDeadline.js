@@ -1,14 +1,3 @@
-/**
- * src/utils/calculateTaskDeadline.js
- *
- * Calculates a task deadline based on company working hours.
- * Skips: non-working days, holidays, break times.
- *
- * Usage:
- *   import { calculateTaskDeadline } from "../utils/calculateTaskDeadline.js";
- *   const deadline = calculateTaskDeadline(new Date(), 60, companyDoc);
- */
-
 function parseTime(timeStr) {
   const [hours, minutes] = timeStr.split(":").map(Number);
   return { hours, minutes };

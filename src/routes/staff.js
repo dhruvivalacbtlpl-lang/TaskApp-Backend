@@ -17,8 +17,6 @@ const staffSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// IMPORTANT: This allows user@gmail.com to exist in Company A and Company B, 
-// but prevents duplicate emails within the SAME company.
 staffSchema.index({ email: 1, company: 1 }, { unique: true });
 
 export default mongoose.model("Staff", staffSchema);
